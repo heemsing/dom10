@@ -1,0 +1,2748 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<script src="//cdn.callibri.ru/callibri.js" type="text/javascript" charset="utf-8" defer></script>
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript">
+    (function(m,e,t,r,i,k,a){
+        m[i]=m[i]||function(){(m[i].a=m[i].a||[]).push(arguments)};
+        m[i].l=1*new Date();
+        for (var j = 0; j < document.scripts.length; j++) {if (document.scripts[j].src === r) { return; }}
+        k=e.createElement(t),a=e.getElementsByTagName(t)[0],k.async=1,k.src=r,a.parentNode.insertBefore(k,a)
+    })(window, document,'script','https://mc.yandex.ru/metrika/tag.js', 'ym');
+
+    ym(99128157, 'init', {webvisor:true, clickmap:true, referrer: document.referrer, url: location.href, accurateTrackBounce:true, trackLinks:true});
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/99128157" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+<!-- /Yandex.Metrika counter -->
+
+<script>
+/**
+ * JSSter v11.0 — множественные цели-вехи с антибот-проверками.
+ *
+ * НОВОЕ (#17):
+ *   - Конфиг goals: каждая веха активности (15/30/45/60с) и скролла (25/50/75%)
+ *     стала отдельной целью Metrika (reachGoal) с собственным идентификатором.
+ *   - Перед отправкой ПЕРВОЙ цели выполняются все антибот-проверки (как раньше для 60sec).
+ *     Если пройдено — флаг _checksPassed, остальные вехи отправляются без повторного прогона.
+ *     Если провалено — движок останавливается, не отправляется ни одна цель.
+ *   - Движок работает до последней достигнутой вехи (или таймаута), wasGoal больше
+ *     не останавливает его после первой цели.
+ *   - Каждая цель отправляется максимум один раз (защита от дублей).
+ *
+ * Все фиксы #1–#16 сохранены.
+ *
+ * ВАЖНО: цели active15/active30/active45/active60/scroll25/scroll50/scroll75
+ *        должны быть созданы в интерфейсе Яндекс.Метрики.
+ */
+(function () {
+    'use strict';
+
+    if (window.__JSSter__) return;
+    window.__JSSter__ = true;
+
+    const CONFIG = {
+        botProtection: 'strict',
+        activeSeconds: 60,
+        activityWindow: 3000,
+        minEventTypes: 2,
+
+        automationDetection: {
+            checkWebdriver: true, checkHeadless: true, checkChromeRuntime: true,
+            checkHardwareConcurrency: true,  minCores: 2,  maxCores: 32,
+            checkDeviceMemory: true,          minMemoryGB: 0.5,
+            checkWindowChrome: true,
+            checkScreenDimensions: true,      minScreenWidth: 320, minScreenHeight: 240,
+        },
+        platformConsistency: { checkUAPlatform: true },
+        userAgentData: { enabled: true },
+        domIntegrity: { checkBoundingRect: true, checkCSSDeclaration: true, checkCSSSupports: true },
+        features: { checkMediaCapabilities: true },
+        browserState: { checkHistoryLength: true, checkWindowName: true },
+        errorStack: { enabled: true },
+        screenOrientation: { enabled: true },
+        networkInfo: { enabled: true },
+        rafTiming: { enabled: true, maxIntervalMs: 100 },
+        performanceNavigation: { enabled: true },
+        codecSupport: { enabled: true },
+
+        fingerprinting: {
+            checkCanvas: true, canvasText: 'JSSter©' + Math.random().toString(36).slice(2, 8),
+            checkWebGL: true, checkAudioContext: true,
+            checkFonts: true, minFontCount: 5,
+        },
+
+        timing: {
+            checkTimerPrecision: true, minTimerPrecisionUs: 10,
+            checkFirstInteractionDelay: true, minFirstInteractionMs: 100,
+            checkTimeConsistency: true, maxTimeJumpMs: 5000,
+        },
+
+        mouseTrajectory: { checkCurvature: true, minPathRatio: 1.02, minSamples: 8 },
+        batteryAPI: { enabled: true },
+        clickPosition: { enabled: true, minOffsetFromCenter: 2, minSamples: 2 },
+        trustedEvents: { enabled: true },
+        keystroke: { enabled: true, minKeystrokeInterval: 20, minKeystrokes: 4, maxUniformRatio: 0.6 },
+        touchPressure: { enabled: true },
+
+        prototypeIntegrity: { checkFunctionToString: true, checkNavigatorDescriptors: true },
+        iframeDetection: { enabled: true, checkHiddenFrame: true },
+        honeypot:        { enabled: true, className: 'jsster-hp', attribute: 'data-jsster-hp' },
+
+        speedVariance:   { minHuman: 0.005, sampleSize: 50, maxSampleAgeMs: 1500 },
+        scrollPhysics:   { minStepVariance: 5, requireInertia: true, inertiaThreshold: 0.9, minScrollEvents: 8, maxSampleAgeMs: 1500 },
+
+        deviceEventMatch: true,
+
+        intermediateMetrics: {
+            enabled: true,
+            activityMilestones: [15, 30, 45],
+            scrollMilestones: [25, 50, 75],
+        },
+
+        // ← #17: множественные цели-вехи. Ключ = порог, значение = идентификатор цели в Метрике.
+        // Эти цели должны быть созданы в интерфейсе Метрики.
+        goals: {
+            activity: { 15: 'active15', 30: 'active30', 45: 'active45', 60: 'active60' },
+            scroll:   { 25: 'scroll25', 50: 'scroll50', 75: 'scroll75' },
+        },
+
+        timeout: 600,
+        devices: ['desktop', 'tablet', 'mobile'],
+        systems: ['windows', 'macos', 'ios', 'android'],
+        metrika: { id: 99128157 },
+    };
+
+    const DEBUG = (() => {
+        try { return new URL(window.location.href).searchParams.has('jsster_debug'); }
+        catch { return false; }
+    })();
+
+    const T0 = performance.now();
+    const ts = () => '+' + ((performance.now() - T0) / 1000).toFixed(2) + 's';
+    const log = (lvl, ...a) => {
+        if (!DEBUG && lvl === 'debug') return;
+        const fn = console[lvl] || console.log;
+        fn('%c[JSSter ' + ts() + ']', 'color:#888', ...a);
+    };
+    const dump = (title, obj, ok) => {
+        if (!DEBUG) return;
+        const icon = ok === true ? '✅' : ok === false ? '❌' : 'ℹ️';
+        console.groupCollapsed('%c[JSSter ' + ts() + '] ' + icon + ' ' + title,
+            'color:' + (ok === false ? '#e55' : ok === true ? '#5a5' : '#88a'));
+        if (obj && typeof obj === 'object') {
+            for (const k of Object.keys(obj)) console.log(k + ':', obj[k]);
+        } else console.log(obj);
+        console.groupEnd();
+    };
+
+    const stor = (be) => ({
+        get(k)  { try { return be.getItem(k); } catch { return null; } },
+        set(k,v){ try { be.setItem(k, v); }    catch {} },
+        rm(k)   { try { be.removeItem(k); }     catch {} },
+    });
+
+    // ═══ ПРОВЕРКИ ═══
+
+    function checkBrowserEnvironment(cfg) {
+        const ac = cfg.automationDetection, f = [];
+        if (ac.checkWebdriver && navigator.webdriver === true) f.push('webdriver=true');
+        if (ac.checkHeadless) {
+            const pl = navigator.plugins?.length ?? 0, lg = navigator.languages?.length ?? 0;
+            if (pl === 0 && lg === 0) f.push('empty plugins&languages');
+            if ((navigator.vendor ?? '') === '' && pl === 0) f.push('empty vendor&plugins');
+        }
+        if (ac.checkChromeRuntime && /chrome|chromium/i.test(navigator.userAgent)) {
+            if (typeof window.chrome !== 'object' || window.chrome === null) f.push('no window.chrome');
+            else if (typeof window.chrome.app !== 'object') f.push('no chrome.app');
+        }
+        if (ac.checkHardwareConcurrency) {
+            const c = navigator.hardwareConcurrency;
+            if (c !== undefined && (c < ac.minCores || c > ac.maxCores)) f.push('cores:' + c);
+        }
+        if (ac.checkDeviceMemory) {
+            const m = navigator.deviceMemory;
+            if (m !== undefined && m < ac.minMemoryGB) f.push('RAM:' + m + 'GB');
+        }
+        if (ac.checkWindowChrome) {
+            const ow = window.outerWidth, oh = window.outerHeight, iw = window.innerWidth, ih = window.innerHeight;
+            if (ow === 0 && oh === 0) f.push('outerW/H=0');
+            if (ow > 0 && ow === iw && oh > 0 && oh === ih && !/mobi|android|iphone|ipad/i.test(navigator.userAgent))
+                f.push('outer=inner');
+        }
+        if (ac.checkScreenDimensions) {
+            if (screen.width  > 0 && screen.width  < ac.minScreenWidth)  f.push('screen.w=' + screen.width);
+            if (screen.height > 0 && screen.height < ac.minScreenHeight) f.push('screen.h=' + screen.height);
+        }
+        dump('checkBrowserEnvironment', {
+            webdriver: navigator.webdriver,
+            plugins: navigator.plugins?.length ?? 0,
+            languages: (navigator.languages ?? []).length,
+            vendor: navigator.vendor || '(empty)',
+            cores: navigator.hardwareConcurrency,
+            deviceMemory: navigator.deviceMemory,
+            outer: window.outerWidth + '×' + window.outerHeight,
+            inner: window.innerWidth + '×' + window.innerHeight,
+            screen: screen.width + '×' + screen.height,
+            'window.chrome': typeof window.chrome,
+            'chrome.app': typeof window.chrome?.app,
+            failures: f.length ? f.join('; ') : '(none)',
+        }, f.length === 0);
+        return { passed: f.length === 0, failures: f };
+    }
+
+    function checkPlatformConsistency(cfg) {
+        if (!cfg.platformConsistency.checkUAPlatform) return { passed: true, failures: [] };
+        const ua = navigator.userAgent, pf = (navigator.platform || '').toLowerCase(), f = [];
+        const uaWin = /windows|win32|win64/i.test(ua), uaMac = /macintosh|mac os x/i.test(ua);
+        const uaLnx = /linux/i.test(ua) && !/android/i.test(ua);
+        const pfWin = pf.includes('win'), pfMac = pf.includes('mac'), pfLnx = pf.includes('linux') && !pf.includes('android');
+        if (uaWin && (pfMac || pfLnx)) f.push('UA=Win, pf=' + navigator.platform);
+        if (uaMac && (pfWin || pfLnx)) f.push('UA=Mac, pf=' + navigator.platform);
+        if (uaLnx && (pfWin || pfMac)) f.push('UA=Linux, pf=' + navigator.platform);
+        dump('checkPlatformConsistency', {
+            UA: ua, platform: navigator.platform || '(empty)',
+            uaWin, uaMac, uaLnx, pfWin, pfMac, pfLnx,
+            failures: f.length ? f.join('; ') : '(none)',
+        }, f.length === 0);
+        return { passed: f.length === 0, failures: f };
+    }
+
+    function checkUserAgentData(cfg) {
+        if (!cfg.userAgentData.enabled) return { passed: true };
+        const uad = navigator.userAgentData;
+        if (!uad) { dump('checkUserAgentData', { note: 'navigator.userAgentData не поддерживается — skip' }, true); return { passed: true }; }
+        const f = [];
+        if (!uad.brands || uad.brands.length === 0) f.push('no brands');
+        const pf = uad.platform || '', ua = navigator.userAgent;
+        const uaWin = /windows|win/i.test(ua), uaMac = /mac/i.test(ua), uaLnx = /linux/i.test(ua) && !/android/i.test(ua);
+        const pfWin = pf.includes('Windows'), pfMac = pf.includes('macOS'), pfLnx = pf.includes('Linux');
+        if (uaWin && (pfMac || pfLnx)) f.push('UA=Win, uad=' + pf);
+        if (uaMac && (pfWin || pfLnx)) f.push('UA=Mac, uad=' + pf);
+        if (uaLnx && (pfWin || pfMac)) f.push('UA=Linux, uad=' + pf);
+        dump('checkUserAgentData', {
+            brands: (uad.brands || []).map(b => b.brand + '/' + b.version).join(', '),
+            platform: pf || '(empty)', mobile: uad.mobile,
+            failures: f.length ? f.join('; ') : '(none)',
+        }, f.length === 0);
+        return { passed: f.length === 0, failures: f };
+    }
+
+    function checkDOMIntegrity(cfg) {
+        const di = cfg.domIntegrity, f = [];
+        let rectInfo = '', cssInfo = '', supportsInfo = '';
+        if (di.checkBoundingRect) {
+            try {
+                const r = document.documentElement.getBoundingClientRect();
+                rectInfo = r.width.toFixed(0) + '×' + r.height.toFixed(0);
+                if (isNaN(r.width) || isNaN(r.height) || !isFinite(r.width) || !isFinite(r.height))
+                    f.push('boundingRect NaN/Inf');
+            } catch { f.push('boundingRect throws'); }
+        }
+        if (di.checkCSSDeclaration) {
+            try {
+                const st = document.body?.style || document.documentElement.style;
+                if (st && typeof st.getPropertyValue('display') !== 'string') f.push('CSS getProperty not string');
+                if (st) { const prev = st.display; st.display = 'none'; if (st.display !== 'none') f.push('CSS set broken'); st.display = prev; cssInfo = 'set/get OK'; }
+            } catch (e) { f.push('CSS: ' + e.message); }
+        }
+        if (di.checkCSSSupports) {
+            if (typeof CSS !== 'undefined' && CSS.supports) {
+                const g = CSS.supports('display', 'grid'), fl = CSS.supports('display', 'flex');
+                supportsInfo = 'grid=' + g + ', flex=' + fl;
+                if (!g || !fl) f.push('CSS.supports failed');
+            } else supportsInfo = 'CSS.supports недоступен';
+        }
+        dump('checkDOMIntegrity', { boundingRect: rectInfo, css: cssInfo, supports: supportsInfo, failures: f.length ? f.join('; ') : '(none)' }, f.length === 0);
+        return { passed: f.length === 0, failures: f };
+    }
+
+    function checkMediaCapabilities(cfg) {
+        if (!cfg.features.checkMediaCapabilities) return { passed: true };
+        const mc = navigator.mediaCapabilities;
+        if (!mc) { dump('checkMediaCapabilities', { note: 'API недоступен — skip' }, true); return { passed: true }; }
+        const f = [];
+        if (typeof mc.decodingInfo !== 'function') f.push('no decodingInfo');
+        if (typeof mc.encodingInfo !== 'function') f.push('no encodingInfo');
+        dump('checkMediaCapabilities', { decodingInfo: typeof mc.decodingInfo, encodingInfo: typeof mc.encodingInfo }, f.length === 0);
+        return { passed: f.length === 0, failures: f };
+    }
+
+    function checkBrowserState(cfg) {
+        const bs = cfg.browserState, f = [];
+        let hl = '?', wn = '?';
+        if (bs.checkHistoryLength) {
+            try { hl = history.length; if (hl === 0) f.push('history=0'); if (hl > 10000) f.push('history=' + hl); }
+            catch { f.push('history inaccessible'); }
+        }
+        if (bs.checkWindowName) {
+            try { wn = window.name || '(empty)'; if (window.name && /automation|selenium|puppeteer|playwright|webdriver|bot/i.test(window.name)) f.push('window.name: ' + window.name.substring(0, 50)); }
+            catch { f.push('window.name inaccessible'); }
+        }
+        dump('checkBrowserState', { 'history.length': hl, 'window.name': wn, failures: f.length ? f.join('; ') : '(none)' }, f.length === 0);
+        return { passed: f.length === 0, failures: f };
+    }
+
+    function checkErrorStack(cfg) {
+        if (!cfg.errorStack.enabled) return { passed: true };
+        try {
+            const e = new Error(), stack = e.stack || '';
+            const firstLine = stack.split('\n')[0] || '', f = [];
+            if (/pptr:/i.test(firstLine)) f.push('pptr://');
+            if (/selenium:/i.test(firstLine)) f.push('selenium://');
+            if (/playwright:/i.test(firstLine)) f.push('playwright://');
+            if (/^file:\/\//.test(firstLine)) f.push('file://');
+            const lines = stack.split('\n').slice(0, 5);
+            if (lines.filter(l => /:0:\d+/.test(l) || /:0$/.test(l)).length >= 3) f.push('multiple :0');
+            dump('checkErrorStack', { firstLine, stackLines: lines.length, failures: f.length ? f.join('; ') : '(none)' }, f.length === 0);
+            return { passed: f.length === 0, failures: f, firstLine };
+        } catch { return { passed: true }; }
+    }
+
+    function checkScreenOrientation(cfg) {
+        if (!cfg.screenOrientation.enabled) return { passed: true };
+        const f = [];
+        let t = '(нет API)';
+        if (screen.orientation) {
+            t = screen.orientation.type;
+            if (!t) f.push('type empty');
+            if (!/mobi|android|iphone|ipad/i.test(navigator.userAgent) && t && t !== 'landscape-primary')
+                f.push('desktop: ' + t);
+        }
+        dump('checkScreenOrientation', { type: t, angle: screen.orientation?.angle, failures: f.length ? f.join('; ') : '(none)' }, f.length === 0);
+        return { passed: f.length === 0, failures: f };
+    }
+
+    function checkNetworkInfo(cfg) {
+        if (!cfg.networkInfo.enabled) return { passed: true };
+        const conn = navigator.connection;
+        if (!conn) { dump('checkNetworkInfo', { note: 'navigator.connection недоступен — skip' }, true); return { passed: true }; }
+        const f = [];
+        if (conn.rtt === 0 && conn.downlink === 0) f.push('rtt=0,downlink=0');
+        if (!conn.effectiveType) f.push('no effectiveType');
+        dump('checkNetworkInfo', { rtt: conn.rtt, downlink: conn.downlink, effectiveType: conn.effectiveType, saveData: conn.saveData, failures: f.length ? f.join('; ') : '(none)' }, f.length === 0);
+        return { passed: f.length === 0, failures: f };
+    }
+
+    function checkRAF(cfg) {
+        if (!cfg.rafTiming.enabled) return { passed: true };
+        return new Promise((resolve) => {
+            const startTime = performance.now();
+            let last = startTime, count = 0, minInterval = Infinity;
+            const maxWait = 2000;
+            function step(tsraf) {
+                const interval = tsraf - last; last = tsraf;
+                if (count > 0 && interval > 0 && interval < minInterval) minInterval = interval;
+                count++;
+                if (count < 5 && performance.now() - startTime < maxWait) requestAnimationFrame(step);
+                else {
+                    const ok = !(count === 0 || minInterval > cfg.rafTiming.maxIntervalMs);
+                    dump('checkRAF', { frames: count, minInterval: minInterval === Infinity ? '∞' : minInterval.toFixed(1) + 'ms', threshold: cfg.rafTiming.maxIntervalMs + 'ms' }, ok);
+                    resolve(!ok
+                        ? { passed: false, reason: 'rAF: no frames or interval ' + (minInterval === Infinity ? '∞' : minInterval.toFixed(0) + 'ms') }
+                        : { passed: true, frameCount: count, minInterval });
+                }
+            }
+            requestAnimationFrame(step);
+            setTimeout(() => resolve({ passed: true }), maxWait + 500);
+        });
+    }
+
+    function checkPerformanceNav(cfg) {
+        if (!cfg.performanceNavigation.enabled) return { passed: true };
+        const f = [];
+        let navType = '(нет записи)';
+        try {
+            const entries = performance.getEntriesByType('navigation');
+            if (entries.length > 0) {
+                navType = entries[0].type;
+                if (!entries[0].type || !['navigate','reload','back_forward','prerender'].includes(entries[0].type))
+                    f.push('nav type: ' + entries[0].type);
+            }
+        } catch (e) { if (DEBUG) log('debug', 'perfNav err:', e.message); }
+        dump('checkPerformanceNav', { type: navType, failures: f.length ? f.join('; ') : '(none)' }, f.length === 0);
+        return { passed: f.length === 0, failures: f };
+    }
+
+    function checkCodecSupport(cfg) {
+        if (!cfg.codecSupport.enabled) return { passed: true };
+        try {
+            const v = document.createElement('video');
+            const codecs = ['video/mp4; codecs="avc1.42E01E"','video/webm; codecs="vp8"','video/ogg; codecs="theora"'];
+            const res = {}; let n = 0;
+            for (const c of codecs) { const s = v.canPlayType(c) !== ''; res[c.split(';')[0]] = v.canPlayType(c) || 'no'; if (s) n++; }
+            if (n === 0) { dump('checkCodecSupport', res, false); log('warn', 'Codecs: 0'); return { passed: false, reason: 'no codecs' }; }
+            dump('checkCodecSupport', Object.assign(res, { supported: n + '/3' }), true);
+            return { passed: true, supported: n };
+        } catch (e) { if (DEBUG) log('debug', 'Codec err:', e.message); return { passed: true }; }
+    }
+
+    function checkCanvas(cfg) {
+        if (!cfg.fingerprinting.checkCanvas) return { passed: true };
+        try {
+            const mk = (txt) => {
+                const c = document.createElement('canvas'); c.width = 220; c.height = 30;
+                const x = c.getContext('2d'); x.textBaseline = 'top'; x.font = '14px Arial';
+                x.fillStyle = '#f60'; x.fillRect(0, 0, 100, 20);
+                x.fillStyle = '#069'; x.fillText(txt, 2, 2);
+                return c.toDataURL();
+            };
+            const a = mk(cfg.fingerprinting.canvasText), b = mk(cfg.fingerprinting.canvasText + '!');
+            const identical = a === b;
+            dump('checkCanvas', { textLen: a.length, identical, hashA: a.slice(-16), hashB: b.slice(-16) }, !identical);
+            if (identical) return { passed: false, reason: 'identical' };
+        } catch (e) { if (DEBUG) log('debug', 'Canvas err:', e.message); }
+        return { passed: true };
+    }
+
+    function checkWebGL(cfg) {
+        if (!cfg.fingerprinting.checkWebGL) return { passed: true };
+        try {
+            const gl = document.createElement('canvas').getContext('webgl')
+                    || document.createElement('canvas').getContext('experimental-webgl');
+            if (!gl) { dump('checkWebGL', { note: 'WebGL недоступен — skip' }, true); return { passed: true }; }
+            const di = gl.getExtension('WEBGL_debug_renderer_info');
+            if (!di) { dump('checkWebGL', { note: 'нет WEBGL_debug_renderer_info — skip' }, true); return { passed: true }; }
+            const v = gl.getParameter(di.UNMASKED_VENDOR_WEBGL), r = gl.getParameter(di.UNMASKED_RENDERER_WEBGL);
+            const f = [];
+            if (/swiftshader/i.test(r)) f.push('SwiftShader');
+            if (/llvmpipe/i.test(r)) f.push('llvmpipe');
+            if (/google/i.test(v) && /swiftshader/i.test(r)) f.push('Google SwiftShader');
+            if (/apple/i.test(v) && !/macintosh|mac os x/i.test(navigator.userAgent)) f.push('Apple non-Mac');
+            dump('checkWebGL', { vendor: v, renderer: r, failures: f.length ? f.join('; ') : '(none)' }, f.length === 0);
+            return { passed: f.length === 0, failures: f };
+        } catch (e) { if (DEBUG) log('debug', 'WebGL err:', e.message); }
+        return { passed: true };
+    }
+
+    function checkAudioContext(cfg) {
+        if (!cfg.fingerprinting.checkAudioContext) return { passed: true };
+        try {
+            const Ctx = window.AudioContext || window.webkitAudioContext;
+            if (!Ctx) { dump('checkAudioContext', { note: 'AudioContext недоступен — skip' }, true); return { passed: true }; }
+            const ctx = new Ctx(), sr = ctx.sampleRate, ch = ctx.destination.channelCount;
+            ctx.close();
+            const f = []; if (!sr) f.push('sr=0'); if (!ch) f.push('0ch');
+            dump('checkAudioContext', { sampleRate: sr, channels: ch, state: ctx.state }, f.length === 0);
+            return { passed: f.length === 0, failures: f };
+        } catch (e) { if (DEBUG) log('debug', 'Audio err:', e.message); return { passed: true }; }
+    }
+
+    function checkFonts(cfg) {
+        if (!cfg.fingerprinting.checkFonts) return { passed: true };
+        try {
+            const test = ['Arial','Times New Roman','Courier New','Georgia','Verdana','Trebuchet MS','Comic Sans MS','Impact','Tahoma'];
+            const c = document.createElement('canvas'), x = c.getContext('2d');
+            x.font = '72px monospace'; const base = x.measureText('mmmmmmmmmm').width;
+            let n = 0; const detected = [];
+            for (const f of test) { x.font = '72px "' + f + '", monospace'; if (x.measureText('mmmmmmmmmm').width !== base) { n++; detected.push(f); } }
+            const ok = n >= cfg.fingerprinting.minFontCount;
+            dump('checkFonts', { detected: n + '/' + test.length, fonts: detected.join(', '), min: cfg.fingerprinting.minFontCount }, ok);
+            if (!ok) { log('warn', 'Fonts:' + n); return { passed: false, reason: 'fonts:' + n }; }
+            return { passed: true, detected: n };
+        } catch (e) { if (DEBUG) log('debug', 'Fonts err:', e.message); return { passed: true }; }
+    }
+
+    function checkPrototypeIntegrity(cfg) {
+        const pi = cfg.prototypeIntegrity, f = [];
+        const native = Function.prototype.toString.toString().includes('native code');
+        if (pi.checkFunctionToString && !native) f.push('toString not native');
+        let wdDesc = '?';
+        if (pi.checkNavigatorDescriptors) {
+            try {
+                const d = Object.getOwnPropertyDescriptor(Navigator.prototype, 'webdriver');
+                wdDesc = d ? (d.get ? 'getter' : 'value=' + d.value) : 'нет дескриптора';
+                if (d && d.value !== undefined && !d.get) f.push('webdriver desc');
+            } catch {}
+        }
+        dump('checkPrototypeIntegrity', { 'toString native': native, webdriverDescriptor: wdDesc, failures: f.length ? f.join('; ') : '(none)' }, f.length === 0);
+        return { passed: f.length === 0, failures: f };
+    }
+
+    function checkTiming(cfg) {
+        const tc = cfg.timing, f = [];
+        let minP = '— (нет образцов: таймер огрублён)';
+        if (tc.checkTimerPrecision) {
+            const s = [];
+            for (let i = 0; i < 20; i++) { const a = performance.now(), b = performance.now(); if (b > a) s.push(b - a); }
+            if (s.length > 0) { const m = Math.min(...s); minP = (m*1000).toFixed(1) + 'µs (' + s.length + ' измерений)'; if (m < tc.minTimerPrecisionUs / 1000) f.push('timer:' + (m*1000).toFixed(0) + 'µs'); }
+        }
+        dump('checkTiming', { minPrecision: minP, threshold: tc.minTimerPrecisionUs + 'µs', failures: f.length ? f.join('; ') : '(none)' }, f.length === 0);
+        return { passed: f.length === 0, failures: f };
+    }
+
+    function checkIframe(cfg) {
+        if (!cfg.iframeDetection.enabled) return { passed: true };
+        const f = [];
+        let info = 'top-level окно';
+        try {
+            if (window.self !== window.top && cfg.iframeDetection.checkHiddenFrame) {
+                info = 'внутри iframe';
+                try {
+                    const el = window.frameElement;
+                    if (el) {
+                        const r = el.getBoundingClientRect(), s = getComputedStyle(el);
+                        info += ' ' + r.width.toFixed(0) + '×' + r.height.toFixed(0) + ' display=' + s.display;
+                        if (r.width <= 1 || r.height <= 1) f.push('frame ' + r.width + '×' + r.height);
+                        if (s.display === 'none' || s.visibility === 'hidden') f.push('frame hidden');
+                        if (parseFloat(s.opacity) === 0) f.push('frame opacity:0');
+                    }
+                } catch { f.push('cross-origin iframe'); info += ' (cross-origin)'; }
+            }
+        } catch {}
+        dump('checkIframe', { context: info, failures: f.length ? f.join('; ') : '(none)' }, f.length === 0);
+        return { passed: f.length === 0, failures: f };
+    }
+
+    // ═══ HONEYPOT ═══
+    class Honeypot {
+        constructor(cfg) {
+            this.cfg = cfg; this.triggered = false;
+            this._listeners = [];
+            if (!cfg.honeypot.enabled) { dump('Honeypot', { note: 'отключён в конфиге' }, true); return; }
+            this._els = document.querySelectorAll('.' + cfg.honeypot.className + ', [' + cfg.honeypot.attribute + ']');
+            if (!this._els.length) { dump('Honeypot', { note: 'элементы не найдены', selector: '.' + cfg.honeypot.className + ', [' + cfg.honeypot.attribute + ']' }, true); return; }
+            this._setup();
+            dump('Honeypot', { armed: this._els.length, selector: '.' + cfg.honeypot.className + ', [' + cfg.honeypot.attribute + ']' }, true);
+        }
+        _setup() {
+            const self = this;
+            const cn = this.cfg.honeypot.className;
+            const attr = this.cfg.honeypot.attribute;
+            const hpSelector = '.' + cn + ', [' + attr + ']';
+            const hpInputSelector = '[' + attr + '], .' + cn + ', [' + attr + '] input, [' + attr + '] textarea, .' + cn + ' input, .' + cn + ' textarea';
+            const fire = (kind, e) => {
+                self.triggered = true;
+                const el = e.target;
+                log('warn', 'HP ' + kind, el ? ('<' + el.tagName.toLowerCase() + (el.id ? '#' + el.id : '') + '>') : '');
+            };
+            const onClick  = (e) => { if (e.target && e.target.closest(hpSelector)) fire('CLICK', e); };
+            const onFocus  = (e) => { if (e.target && e.target.closest(hpSelector)) fire('FOCUS', e); };
+            const onInput  = (e) => { if (e.target && e.target.closest(hpInputSelector)) fire('INPUT', e); };
+            const onChange = (e) => { if (e.target && e.target.closest(hpInputSelector)) fire('CHANGE', e); };
+            document.addEventListener('click', onClick, { capture: true, passive: true });
+            document.addEventListener('focusin', onFocus, { capture: true });
+            document.addEventListener('input', onInput, { capture: true });
+            document.addEventListener('change', onChange, { capture: true });
+            this._listeners = [
+                { type: 'click',   fn: onClick,  opts: { capture: true, passive: true } },
+                { type: 'focusin', fn: onFocus,  opts: { capture: true } },
+                { type: 'input',   fn: onInput,  opts: { capture: true } },
+                { type: 'change',  fn: onChange, opts: { capture: true } },
+            ];
+        }
+        isTriggered() { return this.triggered; }
+        destroy() {
+            for (const l of this._listeners) document.removeEventListener(l.type, l.fn, l.opts);
+            this._listeners = []; this._els = []; this.triggered = false;
+        }
+    }
+
+    // ═══ АНАЛИЗАТОРЫ ═══
+    class ClickPositionAnalyzer {
+        constructor(o) { this.minOff = o.minOffsetFromCenter ?? 2; this.minS = o.minSamples ?? 2; this.s = []; }
+        record(e) {
+            const t = e.target; if (!t?.getBoundingClientRect) return;
+            const r = t.getBoundingClientRect(), cx = r.left + r.width/2, cy = r.top + r.height/2;
+            if (e.clientX === 0 && e.clientY === 0) { this.s.push({o:0, synth:true}); return; }
+            this.s.push({o:Math.sqrt((e.clientX-cx)**2 + (e.clientY-cy)**2), synth:false});
+            if (this.s.length > 50) this.s.shift();
+        }
+        isSuspicious() {
+            if (this.s.length < this.minS) return false;
+            const bad = this.s.filter(x => x.synth || x.o < this.minOff);
+            const ratio = bad.length / this.s.length;
+            if (ratio > 0.8) { log('warn', 'BOT: ' + (ratio*100).toFixed(0) + '% center clicks (' + bad.length + '/' + this.s.length + ')'); return true; }
+            return false;
+        }
+        snapshot() { const bad = this.s.filter(x => x.synth || x.o < this.minOff); return { samples: this.s.length, badRatio: this.s.length ? (bad.length/this.s.length).toFixed(2) : '—' }; }
+        reset() { this.s = []; }
+    }
+
+    class MouseTrajectoryAnalyzer {
+        constructor(o) { this.minR = o.minPathRatio??1.02; this.minS = o.minSamples??8; this.pts=[]; this.tot=0; this.st=null; this.en=null; }
+        record(cx,cy) {
+            const p={x:cx,y:cy}; if (this.pts.length>0) { const pr=this.pts[this.pts.length-1]; this.tot+=Math.sqrt((cx-pr.x)**2+(cy-pr.y)**2); }
+            if (!this.st) this.st=p; this.en=p; this.pts.push(p);
+            if (this.pts.length>200) { const old=this.pts.shift(); if (this.pts.length>0) this.tot-=Math.sqrt((this.pts[0].x-old.x)**2+(this.pts[0].y-old.y)**2); this.st=this.pts[0]; }
+        }
+        ratio() { if (this.pts.length<this.minS||!this.st||!this.en) return null; const s=Math.sqrt((this.en.x-this.st.x)**2+(this.en.y-this.st.y)**2); return s<10?null:this.tot/s; }
+        isBot() { const r=this.ratio(); return r!==null && r<this.minR; }
+        snapshot() { const r=this.ratio(); return { pts: this.pts.length, ratio: r===null?'—':r.toFixed(3), min: this.minR }; }
+        reset() { this.pts=[]; this.tot=0; this.st=null; this.en=null; }
+    }
+
+    class SpeedVarianceAnalyzer {
+        constructor(n,th) { this.n=n;this.th=th;this.buf=new Array(n);this.idx=0;this.cnt=0;this.px=null;this.py=null;this.pt=0; }
+        record(cx,cy,ts2) { if(this.px!==null&&this.pt>0){const dt=ts2-this.pt;if(dt>0&&dt<1000){this.buf[this.idx]=Math.sqrt((cx-this.px)**2+(cy-this.py)**2)/dt;this.idx=(this.idx+1)%this.n;if(this.cnt<this.n)this.cnt++;}} this.px=cx;this.py=cy;this.pt=ts2; }
+        variance() { if(this.cnt<3)return null;let m=0,m2=0;for(let i=0;i<this.cnt;i++){const d=this.buf[i]-m;m+=d/(i+1);m2+=d*(this.buf[i]-m);}return m2/(this.cnt-1);}
+        isBot() { const v=this.variance();return v!==null&&v<this.th; }
+        isFresh(now, maxAge) { return this.cnt >= 3 && this.pt > 0 && (now - this.pt) <= maxAge; }
+        snapshot() { const v=this.variance(); return { cnt: this.cnt, variance: v===null?'—':v.toFixed(4), min: this.th }; }
+        reset() { this.buf=new Array(this.n);this.idx=0;this.cnt=0;this.px=null;this.py=null;this.pt=0; }
+    }
+
+    class ScrollPhysicsAnalyzer {
+        constructor(o) {
+            this.minSV = o.minStepVariance ?? 5; this.reqIn = o.requireInertia ?? true;
+            this.inTh = o.inertiaThreshold ?? 0.9; this.minEv = o.minScrollEvents ?? 8;
+            this.maxAge = o.maxSampleAgeMs ?? 1500;
+            this.steps = []; this.pos = []; this._lastY = null; this._lastT = 0;
+        }
+        record(y, ts2) {
+            if (this._lastY !== null) {
+                const step = Math.abs(y - this._lastY);
+                if (step > 0) { this.steps.push(step); if (this.steps.length > 100) this.steps.shift(); }
+            }
+            this._lastY = y;
+            this._lastT = ts2;
+            this.pos.push({ y, t: ts2 }); if (this.pos.length > 60) this.pos.shift();
+        }
+        stepVar() {
+            if (this.steps.length < 3) return null;
+            const n = this.steps.length, mean = this.steps.reduce((a, b) => a + b, 0) / n;
+            return this.steps.reduce((s, v) => s + (v - mean) ** 2, 0) / (n - 1);
+        }
+        hasInertia() {
+            if (this.pos.length < this.minEv) return null;
+            const speeds = [];
+            for (let i = 1; i < this.pos.length; i++) {
+                const dt = this.pos[i].t - this.pos[i - 1].t, dy = Math.abs(this.pos[i].y - this.pos[i - 1].y);
+                if (dt > 0 && dt < 500) speeds.push(dy / dt);
+            }
+            if (speeds.length < 6) return null;
+            const last = speeds.slice(-6); let dec = 0;
+            for (let i = 1; i < last.length; i++) if (last[i] < last[i - 1] * this.inTh) dec++;
+            return dec >= 1;
+        }
+        check(now) {
+            const r = { sv: null, svBot: false, hi: null, isBot: false };
+            const sv = this.stepVar();
+            if (sv !== null) { r.sv = sv; if (sv < this.minSV) { r.svBot = true; r.isBot = true; log('warn', 'BOT: stepVar=' + sv.toFixed(2) + ' < ' + this.minSV); } }
+            if (this.reqIn) {
+                const fresh = this._lastT > 0 && now && (now - this._lastT) <= this.maxAge;
+                if (fresh) {
+                    const hi = this.hasInertia(); r.hi = hi;
+                    if (hi === false) { r.isBot = true; log('warn', 'BOT: no inertia'); }
+                } else {
+                    log('debug', 'inertia: пропуск (скролл был >' + this.maxAge + 'ms назад)');
+                }
+            }
+            return r;
+        }
+        snapshot() { const sv=this.stepVar(); return { steps: this.steps.length, pos: this.pos.length, stepVar: sv===null?'—':sv.toFixed(2), inertia: this.hasInertia() }; }
+        reset() { this.steps = []; this.pos = []; this._lastY = null; this._lastT = 0; }
+    }
+
+    class KeystrokeAnalyzer {
+        constructor(o) { this.minInterval=o.minKeystrokeInterval??20;this.minStrokes=o.minKeystrokes??4;this.maxUniform=o.maxUniformRatio??0.6;this.intervals=[];this.lastKeyTime=0; }
+        record(ts2) { if(this.lastKeyTime>0){const i=ts2-this.lastKeyTime;if(i>0&&i<5000)this.intervals.push(i);if(this.intervals.length>100)this.intervals.shift();} this.lastKeyTime=ts2; }
+        isSuspicious() {
+            if(this.intervals.length<this.minStrokes)return false;
+            const tooFast=this.intervals.filter(i=>i<this.minInterval);
+            if(tooFast.length>0&&tooFast.length/this.intervals.length>0.3){log('warn','BOT: '+(tooFast.length/this.intervals.length*100).toFixed(0)+'% keystrokes<'+this.minInterval+'ms');return true;}
+            const sorted=[...this.intervals].sort((a,b)=>a-b);const mode=sorted[Math.floor(sorted.length/2)];
+            if(mode>0){const similar=this.intervals.filter(i=>Math.abs(i-mode)/mode<0.05);if(similar.length/this.intervals.length>this.maxUniform){log('warn','BOT: '+(similar.length/this.intervals.length*100).toFixed(0)+'% uniform keystrokes');return true;}}
+            return false;
+        }
+        snapshot() { return { intervals: this.intervals.length, avg: this.intervals.length ? Math.round(this.intervals.reduce((a,b)=>a+b,0)/this.intervals.length) + 'ms' : '—' }; }
+        reset() { this.intervals=[];this.lastKeyTime=0; }
+    }
+
+    function checkDeviceEventMatch(evTypes) {
+        const ta = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+        const ok = !(ta && evTypes.has('mousemove') && !evTypes.has('touchstart') && !evTypes.has('touchmove'));
+        dump('checkDeviceEventMatch', { touchCapable: ta, hasMousemove: evTypes.has('mousemove'), hasTouch: evTypes.has('touchstart') || evTypes.has('touchmove') }, ok);
+        return ok;
+    }
+
+    // ═══ ДВИЖОК ═══
+    class JSSterEngine {
+        constructor(cfg) {
+            this.cfg = cfg; this.ls = stor(localStorage); this.ss = stor(sessionStorage);
+            this.wasDestroyed = false;
+            this._active = true; this._interacted = false;
+            this._sec = 0; this._lastAct = 0;
+            this._evTypes = new Set();
+            this._evCounts = {};
+            this._mouseLogN = 0;
+            this._idleLogN = 0;
+            this._speedA = null; this._scrollA = null; this._mouseA = null; this._clickA = null; this._keyA = null; this._hp = null;
+
+            // ← #17: состояние мульти-целей
+            this._checksPassed = false;      // антибот-проверки пройдены (общий флаг)
+            this._checkFailed = false;       // проверки провалены → ничего не отправляем
+            this._sentGoals = new Set();     // уже отправленные цели (защита от дублей)
+            this._goalsSentCount = 0;
+            this._totalGoals = 0;            // сколько всего целей сконфигурировано
+            this._sentActivityMs = new Set();
+            this._sentScrollMs = new Set();
+
+            const navEntry = performance.getEntriesByType?.('navigation')?.[0];
+            this._initEpoch   = Date.now();
+            this._navToInitMs = navEntry ? Math.round(performance.now() - navEntry.startTime) : -1;
+
+            this._firstInteractionTime = 0; this._lastTime = Date.now();
+            this._untrusted = 0; this._totalEv = 0;
+            this._rafCheckPassed = true;
+            this._firstIntentionalChecked = false;
+            this._onVisibility = () => {
+                this._active = document.visibilityState === 'visible';
+                log('debug', 'visibility →', document.visibilityState);
+                if (this._active && this._interacted) this._lastAct = Date.now();
+            };
+            this._handleAct = this._handleAct.bind(this); this._tick = this._tick.bind(this);
+            this._activityTimer = null; this._timeoutTimer = null;
+
+            // ← #17: считаем общее число целей
+            const g = this.cfg.goals || {};
+            this._totalGoals = Object.keys(g.activity || {}).length + Object.keys(g.scroll || {}).length;
+
+            if (DEBUG) {
+                console.log('%c[JSSter] v11.0 VERBOSE MODE', 'color:#5a5;font-weight:bold;font-size:13px');
+                dump('CONFIG', cfg, true);
+                dump('Environment snapshot', {
+                    href: location.href,
+                    readyState: document.readyState,
+                    userAgent: navigator.userAgent,
+                    platform: navigator.platform,
+                    viewport: window.innerWidth + '×' + window.innerHeight,
+                    devicePixelRatio: window.devicePixelRatio,
+                    touchPoints: navigator.maxTouchPoints,
+                    navToInit: this._navToInitMs + 'ms (навигация → инициализация)',
+                    metrika: typeof window.ym,
+                    totalGoals: this._totalGoals,
+                }, true);
+            }
+
+            if (this._init()) log('info', 'v11.0 started —', this.cfg.botProtection, '| целей:', this._totalGoals);
+            else this._destroy('init failed');
+        }
+
+        _init() {
+            if (typeof window.ym !== 'function') { log('warn', 'Metrika not loaded'); return false; }
+            const prot = this.cfg.botProtection;
+            log('debug', 'botProtection level:', prot);
+
+            if (prot === 'medium' || prot === 'strict') {
+                const env = checkBrowserEnvironment(this.cfg);
+                if (!env.passed) { log('warn', 'BOT: env:', env.failures.join('; ')); return false; }
+                const plat = checkPlatformConsistency(this.cfg);
+                if (!plat.passed) { log('warn', 'BOT: platform:', plat.failures.join('; ')); return false; }
+            }
+
+            if (prot === 'strict') {
+                const checks = [
+                    checkIframe, checkCanvas, checkWebGL, checkAudioContext, checkFonts,
+                    checkPrototypeIntegrity, checkTiming, checkScreenOrientation, checkNetworkInfo,
+                    checkPerformanceNav, checkCodecSupport, checkUserAgentData, checkDOMIntegrity,
+                    checkMediaCapabilities, checkBrowserState, checkErrorStack,
+                ];
+                log('debug', 'strict-проверок:', checks.length);
+                for (const fn of checks) {
+                    const r = fn(this.cfg);
+                    if (!r.passed) { log('warn', 'BOT:', fn.name, r.reason || r.failures?.join('; ')); return false; }
+                }
+                const self = this;
+                checkRAF(this.cfg).then(r => {
+                    self._rafCheckPassed = r.passed;
+                    if (!r.passed) log('warn', 'BOT: rAF:', r.reason);
+                    else log('debug', 'rAF OK:', r.frameCount, 'frames, min=' + (r.minInterval?.toFixed(1) || '?') + 'ms');
+                });
+            }
+
+            if (this.cfg.devices.length) {
+                const w = window.innerWidth, d = w >= 1024 ? 'desktop' : w >= 768 ? 'tablet' : 'mobile';
+                log('debug', 'device:', d, '(width=' + w + ')');
+                if (!this.cfg.devices.includes(d)) { log('info', 'Device excluded:', d); return false; }
+            }
+            if (this.cfg.systems.length) {
+                const ua = navigator.userAgent.toLowerCase(); let os = null;
+                if (/iphone|ipad|ipod/.test(ua)) os='ios'; else if (/android/.test(ua)) os='android';
+                else if (/windows|win32|win64|winnt/.test(ua)) os='windows'; else if (/macintosh|mac os x|macintel/.test(ua)) os='macos';
+                log('debug', 'OS:', os);
+                if (!os || !this.cfg.systems.includes(os)) { log('info', 'OS excluded:', os); return false; }
+            }
+
+            if (prot === 'strict') {
+                this._speedA  = new SpeedVarianceAnalyzer(this.cfg.speedVariance.sampleSize, this.cfg.speedVariance.minHuman);
+                this._scrollA = new ScrollPhysicsAnalyzer(this.cfg.scrollPhysics);
+                this._mouseA  = new MouseTrajectoryAnalyzer(this.cfg.mouseTrajectory);
+                this._clickA  = new ClickPositionAnalyzer(this.cfg.clickPosition);
+                this._keyA    = new KeystrokeAnalyzer(this.cfg.keystroke);
+                this._hp      = new Honeypot(this.cfg);
+                log('debug', 'анализаторы инициализированы: speed, scroll, mouse, click, key, honeypot');
+            }
+
+            document.addEventListener('visibilitychange', this._onVisibility);
+            this._initActivityTracking();
+
+            if (this.cfg.timeout > 0) {
+                log('debug', 'таймаут:', this.cfg.timeout + 's');
+                this._timeoutTimer = setTimeout(() => {
+                    log('info', 'Timeout (' + this.cfg.timeout + 's)');
+                    this._destroy('timeout');
+                }, this.cfg.timeout * 1000);
+            }
+
+            return true;
+        }
+
+        _initActivityTracking() {
+            this._sec = 0; this._lastAct = Date.now();
+            const evts = ['mousemove','keydown','keyup','touchstart','touchmove','scroll','click'];
+            evts.forEach(evt => document.addEventListener(evt, this._handleAct, { passive: true }));
+            log('debug', 'отслеживаемые события:', evts.join(', '));
+            this._activityTimer = setInterval(this._tick, 1000);
+        }
+
+        _handleAct(event) {
+            if (!this._active || this._checkFailed) return;
+            const now = Date.now();
+
+            if (this.cfg.botProtection === 'strict' && this.cfg.timing.checkTimeConsistency) {
+                if (now - this._lastTime < 0) { log('warn', 'BOT: time backwards'); this._destroy('time'); return; }
+                this._lastTime = now;
+            }
+
+            this._lastAct = now;
+            const type = event?.type;
+            if (type) { this._evTypes.add(type); this._evCounts[type] = (this._evCounts[type] || 0) + 1; }
+
+            if (this.cfg.botProtection === 'strict' && this.cfg.trustedEvents.enabled) {
+                this._totalEv++;
+                if (event?.isTrusted === false) { this._untrusted++; log('debug', '⚠ untrusted event:', type); }
+            }
+
+            if (!this._interacted) {
+                this._interacted = true; this._firstInteractionTime = now;
+                log('debug', '🟢 первое взаимодействие:', type, '(+' + (now - this._initEpoch) + 'ms от инициализации)');
+            }
+
+            if (DEBUG) {
+                if (type === 'mousemove') {
+                    if (++this._mouseLogN % 20 === 1)
+                        log('debug', 'mousemove @', event.clientX + ',' + event.clientY, '(каждый 20-й, всего ' + this._evCounts.mousemove + ')');
+                } else {
+                    log('debug', 'event:', type, type === 'click' ? ('@ ' + event.clientX + ',' + event.clientY) : '');
+                }
+            }
+
+            const isIntentional = type === 'click' || type === 'keydown' || type === 'keyup' || type === 'touchstart';
+            if (this.cfg.botProtection === 'strict'
+                && this.cfg.timing.checkFirstInteractionDelay
+                && this._initEpoch > 0
+                && isIntentional
+                && !this._firstIntentionalChecked) {
+                this._firstIntentionalChecked = true;
+                const delay = now - this._initEpoch;
+                log('debug', 'проверка задержки 1-го намеренного действия (' + type + '):', delay + 'ms, порог ' + this.cfg.timing.minFirstInteractionMs + 'ms');
+                if (delay < this.cfg.timing.minFirstInteractionMs) {
+                    log('warn', 'BOT: 1st intentional interaction (' + type + ') ' + delay + 'ms');
+                    this._destroy('instant'); return;
+                }
+            }
+
+            if (this.cfg.botProtection === 'strict') {
+                if (type === 'mousemove') { this._speedA?.record(event.clientX, event.clientY, now); this._mouseA?.record(event.clientX, event.clientY); }
+                if (type === 'scroll') this._scrollA?.record(window.scrollY || document.documentElement.scrollTop, now);
+                if (type === 'click') this._clickA?.record(event);
+                if (type === 'keydown') this._keyA?.record(now);
+            }
+
+            this._sendIntermediateMetrics(type);
+
+            // ← #17: проверка scroll-вех (по событию скролла)
+            if (type === 'scroll') this._checkScrollGoals();
+        }
+
+        _sendIntermediateMetrics(type) {
+            const im = this.cfg.intermediateMetrics;
+            if (!im.enabled || !window.ym) return;
+            if (im.activityMilestones && this._sec > 0) {
+                im.activityMilestones.forEach(m => {
+                    if (this._sec >= m && !this._sentActivityMs.has(m)) {
+                        this._sentActivityMs.add(m);
+                        log('debug', '📤 Metrika params: jsster_active_sec=' + m);
+                        try { window.ym(this.cfg.metrika.id, 'params', { jsster_active_sec: m }); }
+                        catch (e) { log('error', 'ym params err:', e.message); }
+                    }
+                });
+            }
+            if (im.scrollMilestones && type === 'scroll') {
+                const pct = this._scrollPct();
+                if (pct !== null) {
+                    im.scrollMilestones.forEach(m => {
+                        if (pct >= m && !this._sentScrollMs.has(m)) {
+                            this._sentScrollMs.add(m);
+                            log('debug', '📤 Metrika params: jsster_scroll_pct=' + m + ' (реальный ' + pct + '%)');
+                            try { window.ym(this.cfg.metrika.id, 'params', { jsster_scroll_pct: m }); }
+                            catch (e) { log('error', 'ym params err:', e.message); }
+                        }
+                    });
+                }
+            }
+        }
+
+        // ← #17: текущий процент скролла (null, если страница не скроллится)
+        _scrollPct() {
+            const docH = document.documentElement, total = docH.scrollHeight - window.innerHeight;
+            if (total <= 0) return null;
+            return Math.round(((window.scrollY || docH.scrollTop) / total) * 100);
+        }
+
+        _stateSummary() {
+            return {
+                sec: this._sec + '/' + this.cfg.activeSeconds,
+                eventTypes: [...this._evTypes].join(',') || '—',
+                untrusted: this._untrusted + '/' + this._totalEv,
+                goalsSent: this._goalsSentCount + '/' + this._totalGoals,
+                speed:  this._speedA  ? this._speedA.snapshot()  : null,
+                scroll: this._scrollA ? this._scrollA.snapshot() : null,
+                mouse:  this._mouseA  ? this._mouseA.snapshot()  : null,
+                click:  this._clickA  ? this._clickA.snapshot()  : null,
+                key:    this._keyA    ? this._keyA.snapshot()    : null,
+            };
+        }
+
+        _tick() {
+            if (!this._active || !this._interacted || this._checkFailed) return;
+            if (Date.now() - this._lastAct <= this.cfg.activityWindow) {
+                this._idleLogN = 0;
+                this._sec++;
+                if (DEBUG) {
+                    const s = this._stateSummary();
+                    log('debug', '⏱ ' + s.sec + 's',
+                        '| types=' + s.eventTypes,
+                        '| goals=' + s.goalsSent,
+                        '| speed.var=' + (s.speed?.variance ?? '—'),
+                        '| mouse.ratio=' + (s.mouse?.ratio ?? '—'),
+                        '| scroll.steps=' + (s.scroll?.steps ?? '—'),
+                        '| keys=' + (s.key?.intervals ?? '—'));
+                }
+                // ← #17: проверка activity-вех (по счётчику секунд)
+                this._checkActivityGoals();
+            } else if (DEBUG) {
+                if (++this._idleLogN % 5 === 1)
+                    log('debug', '⏸ неактивен (последнее событие ' + (Date.now() - this._lastAct) + 'ms назад)');
+            }
+        }
+
+        // ← #17: проверка и отправка activity-целей (15/30/45/60)
+        _checkActivityGoals() {
+            const goals = (this.cfg.goals && this.cfg.goals.activity) || {};
+            for (const threshold of Object.keys(goals).map(Number).sort((a, b) => a - b)) {
+                if (this._sec >= threshold) this._tryEmitGoal('activity', threshold, goals[threshold]);
+            }
+        }
+
+        // ← #17: проверка и отправка scroll-целей (25/50/75)
+        _checkScrollGoals() {
+            const goals = (this.cfg.goals && this.cfg.goals.scroll) || {};
+            const pct = this._scrollPct();
+            if (pct === null) return;
+            for (const threshold of Object.keys(goals).map(Number).sort((a, b) => a - b)) {
+                if (pct >= threshold) this._tryEmitGoal('scroll', threshold, goals[threshold]);
+            }
+        }
+
+        // ← #17: попытка отправить цель: сначала антибот-проверки (один раз), затем reachGoal
+        _tryEmitGoal(kind, threshold, goalId) {
+            if (this._checkFailed || !goalId) return;
+            const key = kind + ':' + threshold;
+            if (this._sentGoals.has(key)) return;
+
+            if (!this._checksPassed) {
+                log('debug', '═══ ПРОВЕРКИ перед целью "' + goalId + '" (' + kind + ' ' + threshold + ') ═══');
+                if (!this._runChecks()) return;      // провал → _checkFailed, ничего не отправляем
+                this._checksPassed = true;
+                log('debug', '✅ все проверки пройдены — цели разблокированы');
+            }
+
+            this._sentGoals.add(key);
+            this._goalsSentCount++;
+            const { id } = this.cfg.metrika;
+            log('info', '🎯 GOAL → ym(' + id + ', "reachGoal", "' + goalId + '") [' + kind + ' ' + threshold + ']');
+            try {
+                window.ym(id, 'reachGoal', goalId);
+            } catch (e) {
+                log('error', 'reachGoal "' + goalId + '" failed:', e.message);
+            }
+
+            // если отправлена последняя возможная цель — останавливаем движок
+            if (this._goalsSentCount >= this._totalGoals) {
+                this._destroy('all goals emitted');
+            }
+        }
+
+        // ← #17: антибот-проверки (вынесены из старого _checkAndEmit). true = пройдено.
+        _runChecks() {
+            dump('Состояние анализаторов', this._stateSummary(), true);
+
+            const fail = (reason) => {
+                this._checkFailed = true;
+                this._destroy('bot: ' + reason);
+                return false;
+            };
+
+            const prot = this.cfg.botProtection;
+            if ((prot === 'medium' || prot === 'strict') && this._evTypes.size < this.cfg.minEventTypes) {
+                log('warn', 'BOT: ' + this._evTypes.size + ' types, need ' + this.cfg.minEventTypes);
+                return fail('event types');
+            }
+            if (prot === 'strict') {
+                if (this._rafCheckPassed === false) { log('warn', 'BOT: rAF'); return fail('rAF'); }
+                if (this._hp?.isTriggered()) { log('warn', 'BOT: honeypot'); return fail('honeypot'); }
+                if (this.cfg.deviceEventMatch && !checkDeviceEventMatch(this._evTypes)) { return fail('device event match'); }
+                if (this.cfg.trustedEvents.enabled && this._totalEv > 5 && this._untrusted/this._totalEv > 0.3) {
+                    log('warn', 'BOT: ' + (this._untrusted/this._totalEv*100).toFixed(0) + '% untrusted');
+                    return fail('untrusted events');
+                }
+                if (this._speedA && this._speedA.cnt >= 3) {
+                    if (this._speedA.isFresh(Date.now(), this.cfg.speedVariance.maxSampleAgeMs)) {
+                        if (this._speedA.isBot()) {
+                            log('warn', 'BOT: speed variance=' + this._speedA.variance().toFixed(4) + ' < ' + this.cfg.speedVariance.minHuman);
+                            return fail('speed variance');
+                        }
+                    } else if (DEBUG) {
+                        log('debug', 'speed variance: пропуск (мышь не двигалась >' + this.cfg.speedVariance.maxSampleAgeMs + 'ms)');
+                    }
+                }
+                if (this._scrollA && this._scrollA.pos.length >= this.cfg.scrollPhysics.minScrollEvents
+                    && this._scrollA.check(Date.now()).isBot) {
+                    return fail('scroll physics');
+                }
+                if (this._mouseA && this._mouseA.pts.length >= this.cfg.mouseTrajectory.minSamples && this._mouseA.isBot()) { log('warn', 'BOT: mouse trajectory'); return fail('mouse trajectory'); }
+                if (this._clickA && this._clickA.s.length >= this.cfg.clickPosition.minSamples && this._clickA.isSuspicious()) { return fail('click position'); }
+                if (this._keyA && this._keyA.intervals.length >= this.cfg.keystroke.minKeystrokes && this._keyA.isSuspicious()) { return fail('keystroke'); }
+            }
+            return true;
+        }
+
+        _destroy(reason) {
+            if (this.wasDestroyed) return;
+            this.wasDestroyed = true;
+            clearInterval(this._activityTimer); clearTimeout(this._timeoutTimer);
+            document.removeEventListener('visibilitychange', this._onVisibility);
+            ['mousemove','keydown','keyup','touchstart','touchmove','scroll','click'].forEach(evt =>
+                document.removeEventListener(evt, this._handleAct));
+            this._speedA?.reset(); this._scrollA?.reset(); this._mouseA?.reset(); this._clickA?.reset(); this._keyA?.reset(); this._hp?.destroy();
+            this._evTypes.clear();
+            if (DEBUG) dump('Итоговая статистика', {
+                reason, activeSeconds: this._sec, eventCounts: this._evCounts,
+                goalsSent: this._goalsSentCount + '/' + this._totalGoals,
+                sentList: [...this._sentGoals],
+            }, true);
+            log('info', 'Destroyed —', reason);
+        }
+    }
+
+    let _bootRetries = 0;
+    const MAX_BOOT_RETRIES = 20;
+
+    function boot() {
+        if (typeof window.ym !== 'function') {
+            if (++_bootRetries > MAX_BOOT_RETRIES) {
+                log('warn', 'Metrika not available after ' + (MAX_BOOT_RETRIES * 500 / 1000) + 's, aborting');
+                return;
+            }
+            if (DEBUG) console.warn('[JSSter] retry ' + _bootRetries + '/' + MAX_BOOT_RETRIES);
+            return setTimeout(boot, 500);
+        }
+        new JSSterEngine(CONFIG);
+    }
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
+    else boot();
+})();
+</script>
+
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Рабочий дом в Москве — бесплатное жильё и работа, от 2000 ₽/день</title>
+<meta name="description" content="Рабочий дом в Москве: бесплатное проживание, 3-разовое питание и работа с ежедневными выплатами от 2000 ₽. Заселение в день обращения. Без паспорта и предоплат">
+<meta name="keywords" content="рабочий дом москва, бесплатное жильё москва, работа с проживанием москва, помощь бездомным москва, трудоустройство с проживанием москва, бесплатное питание, восстановление документов москва, вахта москва, работный дом">
+<meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1">
+<meta name="author" content="Рабочий Дом в Москве">
+<meta name="geo.region" content="RU-MOW">
+<meta name="geo.placename" content="Москва">
+<meta name="theme-color" content="#181923">
+<meta name="format-detection" content="telephone=no">
+<link rel="canonical" href="https://дом-помощи.рф">
+
+<!-- Open Graph -->
+<meta property="og:type" content="website">
+<meta property="og:locale" content="ru_RU">
+<meta property="og:title" content="Рабочий дом в Москве — бесплатное жильё и работа, от 2000 ₽/день">
+<meta property="og:description" content="Помощь в трудной ситуации: бесплатное проживание, трёхразовое питание, ежедневные выплаты от 2 000 ₽. Заселение сразу. Восстановление документов. 1200+ спасённых жизней.">
+<meta property="og:url" content="https://дом-помощи.рф/">
+<meta property="og:site_name" content="Рабочий Дом">
+<meta property="og:image" content="https://дом-помощи.рф/wp-content/uploads/2025/02/1.jpg">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Рабочий дом в Москве — бесплатное жильё и работа">
+
+<!-- Twitter Card -->
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Рабочий дом в Москве — бесплатное жильё и работа, от 2000 ₽/день">
+<meta name="twitter:description" content="Бесплатное проживание, трёхразовое питание и ежедневные выплаты от 2000 ₽. Заселение в день обращения. Восстановление документов. Звоните 24/7.">
+<meta name="twitter:image" content="https://дом-помощи.рф/wp-content/uploads/2025/02/1.jpg">
+
+<!-- Favicon -->
+<link rel="icon" href="https://дом-помощи.рф/wp-content/uploads/2025/08/cropped-favicon-32x32.png" sizes="32x32">
+<link rel="icon" href="https://дом-помощи.рф/wp-content/uploads/2025/08/cropped-favicon-192x192.png" sizes="192x192">
+<link rel="apple-touch-icon" href="https://дом-помощи.рф/wp-content/uploads/2025/08/cropped-favicon-180x180.png">
+
+<!-- Preconnect для ускорения загрузки -->
+<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+<link rel="dns-prefetch" href="https://дом-помощи.рф">
+<link rel="dns-prefetch" href="https://avatars.mds.yandex.net">
+
+<link rel="stylesheet" href="/css/index.css">
+<link rel="stylesheet" href="/css/700.css">
+
+<!-- Schema.org JSON-LD: Organization -->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "LocalBusiness",
+  "@id": "https://дом-помощи.рф/#organization",
+  "name": "Рабочий Дом",
+  "alternateName": "Рабочий дом в Москве",
+  "url": "https://дом-помощи.рф/",
+  "logo": "https://дом-помощи.рф/wp-content/uploads/2025/08/cropped-favicon-192x192.png",
+  "image": "https://дом-помощи.рф/wp-content/uploads/2025/02/1.jpg",
+  "description": "Рабочий дом в Москве: бесплатное проживание, трёхразовое питание и трудоустройство. Помощь в трудной жизненной ситуации. Заселение в день обращения.",
+  "telephone": "+7-901-078-76-03",
+  "email": "info@дом-помощи.рф",
+  "address": {
+    "@type": "PostalAddress",
+    "streetAddress": "м. Выхино",
+    "addressLocality": "Москва",
+    "addressRegion": "Московская область",
+    "postalCode": "109388",
+    "addressCountry": "RU"
+  },
+  "geo": {
+    "@type": "GeoCoordinates",
+    "latitude": "55.6964",
+    "longitude": "37.7289"
+  },
+  "openingHoursSpecification": {
+    "@type": "OpeningHoursSpecification",
+    "dayOfWeek": ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"],
+    "opens": "00:00",
+    "closes": "23:59"
+  },
+  "sameAs": [],
+  "priceRange": "Бесплатно",
+  "areaServed": {
+    "@type": "City",
+    "name": "Москва"
+  },
+  "foundingDate": "2005",
+  "aggregateRating": {
+    "@type": "AggregateRating",
+    "ratingValue": "4.9",
+    "reviewCount": 1200,
+    "bestRating": "5"
+  }
+}
+</script>
+
+<!-- Schema.org JSON-LD: WebPage -->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "WebPage",
+  "@id": "https://дом-помощи.рф/#webpage",
+  "url": "https://дом-помощи.рф/",
+  "name": "Рабочий дом в Москве — бесплатное жильё и работа, от 2000 ₽/день",
+  "description": "Рабочий дом в Москве: помощь в трудной ситуации — бесплатное проживание, питание и трудоустройство. Безопасность, надёжность и анонимность гарантированы.",
+  "isPartOf": {
+    "@id": "https://дом-помощи.рф/#website"
+  },
+  "inLanguage": "ru-RU",
+  "mainEntity": {
+    "@id": "https://дом-помощи.рф/#organization"
+  }
+}
+</script>
+
+<!-- Schema.org JSON-LD: WebSite with SearchAction -->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "WebSite",
+  "@id": "https://дом-помощи.рф/#website",
+  "url": "https://дом-помощи.рф/",
+  "name": "Рабочий Дом",
+  "publisher": {
+    "@id": "https://дом-помощи.рф/#organization"
+  },
+  "inLanguage": "ru-RU"
+}
+</script>
+
+<!-- Schema.org JSON-LD: BreadcrumbList -->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "BreadcrumbList",
+  "itemListElement": [
+    {
+      "@type": "ListItem",
+      "position": 1,
+      "name": "Главная",
+      "item": "https://дом-помощи.рф/"
+    }
+  ]
+}
+</script>
+
+<!-- Schema.org JSON-LD: Reviews -->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "Organization",
+  "name": "Рабочий Дом",
+  "url": "https://дом-помощи.рф/",
+  "review": [
+    {
+      "@type": "Review",
+      "author": {"@type": "Person", "name": "Иван Петров"},
+      "reviewRating": {"@type": "Rating", "ratingValue": "5", "bestRating": "5"},
+      "reviewBody": "Потерял работу и жильё после тяжёлой болезни. В Рабочем Доме восстановили документы, нашли работу. Сейчас снимаю собственную квартиру — жизнь наладилась."
+    },
+    {
+      "@type": "Review",
+      "author": {"@type": "Person", "name": "Мария Сидорова"},
+      "reviewRating": {"@type": "Rating", "ratingValue": "5", "bestRating": "5"},
+      "reviewBody": "После освобождения мне предоставили жильё, работу и психолога. Сегодня работаю штукатуром и строю новую жизнь. Огромное спасибо Рабочему Дому!"
+    },
+    {
+      "@type": "Review",
+      "author": {"@type": "Person", "name": "Алексей Смирнов"},
+      "reviewRating": {"@type": "Rating", "ratingValue": "5", "bestRating": "5"},
+      "reviewBody": "Прошёл курс реабилитации, нашёл работу в мастерской и восстановил отношения с близкими. Веду трезвый образ жизни — Рабочий Дом дал мне этот шанс."
+    }
+  ]
+}
+</script>
+
+<!-- Schema.org JSON-LD: JobPostings -->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "JobPosting",
+      "title": "Демонтажник",
+      "description": "Работа на строительных объектах Москвы. Ежедневные выплаты от 2 000 ₽. Бесплатное проживание и питание.",
+      "datePosted": "2026-07-25",
+      "validThrough": "2027-07-25",
+      "employmentType": "FULL_TIME",
+      "hiringOrganization": {
+        "@type": "Organization",
+        "name": "Рабочий Дом",
+        "sameAs": "https://дом-помощи.рф/"
+      },
+      "jobLocation": {
+        "@type": "Place",
+        "address": {
+          "@type": "PostalAddress",
+          "addressLocality": "Москва",
+          "addressCountry": "RU"
+        }
+      },
+      "baseSalary": {
+        "@type": "MonetaryAmount",
+        "currency": "RUB",
+        "value": {"@type": "QuantitativeValue", "minValue": 2000, "maxValue": 3000, "unitText": "DAY"}
+      }
+    },
+    {
+      "@type": "JobPosting",
+      "title": "Дворник",
+      "description": "Уборка придомовых территорий Москвы. Ежедневные выплаты от 2 000 ₽. Бесплатное жильё и питание.",
+      "datePosted": "2026-07-25",
+      "validThrough": "2027-07-25",
+      "employmentType": "FULL_TIME",
+      "hiringOrganization": {
+        "@type": "Organization",
+        "name": "Рабочий Дом",
+        "sameAs": "https://дом-помощи.рф/"
+      },
+      "jobLocation": {
+        "@type": "Place",
+        "address": {"@type": "PostalAddress", "addressLocality": "Москва", "addressCountry": "RU"}
+      },
+      "baseSalary": {
+        "@type": "MonetaryAmount",
+        "currency": "RUB",
+        "value": {"@type": "QuantitativeValue", "minValue": 2000, "maxValue": 3000, "unitText": "DAY"}
+      }
+    },
+    {
+      "@type": "JobPosting",
+      "title": "Землекоп",
+      "description": "Земляные работы на объектах Москвы. Ежедневные выплаты от 2 000 ₽. Бесплатное проживание.",
+      "datePosted": "2026-07-25",
+      "validThrough": "2027-07-25",
+      "employmentType": "FULL_TIME",
+      "hiringOrganization": {"@type": "Organization", "name": "Рабочий Дом", "sameAs": "https://дом-помощи.рф/"},
+      "jobLocation": {"@type": "Place", "address": {"@type": "PostalAddress", "addressLocality": "Москва", "addressCountry": "RU"}},
+      "baseSalary": {"@type": "MonetaryAmount", "currency": "RUB", "value": {"@type": "QuantitativeValue", "minValue": 2000, "maxValue": 3000, "unitText": "DAY"}}
+    },
+    {
+      "@type": "JobPosting",
+      "title": "Подсобный рабочий",
+      "description": "Помощь на стройке и складах Москвы. Ежедневные выплаты от 2 000 ₽. Бесплатное жильё и питание.",
+      "datePosted": "2026-07-25",
+      "validThrough": "2027-07-25",
+      "employmentType": "FULL_TIME",
+      "hiringOrganization": {"@type": "Organization", "name": "Рабочий Дом", "sameAs": "https://дом-помощи.рф/"},
+      "jobLocation": {"@type": "Place", "address": {"@type": "PostalAddress", "addressLocality": "Москва", "addressCountry": "RU"}},
+      "baseSalary": {"@type": "MonetaryAmount", "currency": "RUB", "value": {"@type": "QuantitativeValue", "minValue": 2000, "maxValue": 3000, "unitText": "DAY"}}
+    },
+    {
+      "@type": "JobPosting",
+      "title": "Разнорабочий",
+      "description": "Универсальные работы на объектах Москвы. Ежедневные выплаты от 2 000 ₽. Бесплатное проживание и питание.",
+      "datePosted": "2026-07-25",
+      "validThrough": "2027-07-25",
+      "employmentType": "FULL_TIME",
+      "hiringOrganization": {"@type": "Organization", "name": "Рабочий Дом", "sameAs": "https://дом-помощи.рф/"},
+      "jobLocation": {"@type": "Place", "address": {"@type": "PostalAddress", "addressLocality": "Москва", "addressCountry": "RU"}},
+      "baseSalary": {"@type": "MonetaryAmount", "currency": "RUB", "value": {"@type": "QuantitativeValue", "minValue": 2000, "maxValue": 3000, "unitText": "DAY"}}
+    },
+    {
+      "@type": "JobPosting",
+      "title": "Специалист",
+      "description": "Квалифицированный труд на объектах Москвы. Ежедневные выплаты от 3 500 ₽. Бесплатное жильё и питание.",
+      "datePosted": "2026-07-25",
+      "validThrough": "2027-07-25",
+      "employmentType": "FULL_TIME",
+      "hiringOrganization": {"@type": "Organization", "name": "Рабочий Дом", "sameAs": "https://дом-помощи.рф/"},
+      "jobLocation": {"@type": "Place", "address": {"@type": "PostalAddress", "addressLocality": "Москва", "addressCountry": "RU"}},
+      "baseSalary": {"@type": "MonetaryAmount", "currency": "RUB", "value": {"@type": "QuantitativeValue", "minValue": 3500, "maxValue": 5000, "unitText": "DAY"}}
+    }
+  ]
+}
+</script>
+
+<!-- Schema.org JSON-LD: FAQ -->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    {
+      "@type": "Question",
+      "name": "Что такое Рабочий Дом?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Рабочий Дом — это организация в Москве, предоставляющая бесплатное проживание, трёхразовое питание и трудоустройство людям в сложной жизненной ситуации. Мы помогаем с восстановлением документов и ресоциализацией."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Сколько стоит проживание в Рабочем Доме?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Проживание полностью бесплатное. Также бесплатно трёхразовое питание. Вы получаете зарплату от 2 000 ₽ в день."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Как быстро можно заселиться?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Заселение происходит в день обращения. Выплаты и проживание предоставляются сразу."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Какие вакансии доступны?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Доступны вакансии: демонтажник, дворник, землекоп, подсобный рабочий, разнорабочий, специалист. Зарплата от 2 000 до 3 500 ₽ в день с ежедневными выплатами."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Помогаете ли вы с документами?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Да, мы помогаем восстановить любые необходимые документы — паспорт, СНИЛС, ИНН и другие."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Можно ли заселиться без паспорта?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Да, мы принимаем людей даже при полном отсутствии документов. Сначала заселяем, обеспечиваем работой и питанием, а параллельно помогаем восстановить паспорт, СНИЛС, ИНН и другие документы."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Как часто выплачивается зарплата?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Зарплата выплачивается ежедневно — от 2 000 до 5 000 ₽ в зависимости от специальности. Деньги на руки в конце каждой смены. Никаких задержек и скрытых удержаний."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Принимаете ли женщин, семейные пары, людей после освобождения?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Да. Мы помогаем всем, кто оказался в трудной ситуации: мужчинам и женщинам, семейным парам, людям после освобождения, беженцам. Единственное условие — готовность работать и соблюдать правила проживания."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Сколько можно жить в Рабочем Доме?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Срок проживания не ограничен — вы можете оставаться у нас столько, сколько нужно для восстановления документов, накопления средств и поиска постоянной работы. Многие живут от пары недель до нескольких месяцев."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Где находится Рабочий Дом и как добраться?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Мы находимся в Москве, рядом с метро Выхино. Точный адрес сообщаем при первом звонке — для безопасности наших постояльцев. Позвоните +7 (901) 078-76-03, и мы расскажем, как доехать."
+      }
+    }
+  ]
+}
+</script>
+
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#181923;
+  --bg-2:#1f2130;
+  --bg-3:#262838;
+  --accent:#f17c34;
+  --accent-2:#f5934a;
+  --accent-hover:#e06b25;
+  --text:#f9f8f2;
+  --text-dim:#b8bac4;
+  --border:rgba(255,255,255,0.08);
+}
+html{scroll-behavior:smooth}
+body{
+  font-family:'Roboto',sans-serif;
+  background:var(--bg);
+  color:var(--text);
+  line-height:1.6;
+  overflow-x:hidden;
+}
+.container{max-width:1240px;margin:0 auto;padding:0 24px}
+a{color:inherit;text-decoration:none}
+img{max-width:100%;display:block}
+
+/* ===== HEADER ===== */
+.header{
+  position:fixed;top:0;left:0;right:0;z-index:100;
+  background:rgba(24,25,35,0.85);
+  backdrop-filter:blur(14px);
+  border-bottom:1px solid var(--border);
+  transition:all .3s;
+}
+.header-inner{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:16px 24px;max-width:1240px;margin:0 auto;
+}
+.logo{display:flex;align-items:center;gap:12px}
+.logo-mark{
+  width:44px;height:44px;border-radius:10px;
+  background:linear-gradient(135deg,var(--accent),var(--accent-2));
+  display:flex;align-items:center;justify-content:center;
+  color:#fff;font-weight:800;font-size:18px;
+  box-shadow:0 6px 20px rgba(241,124,52,.35);
+}
+.logo-text{display:flex;flex-direction:column;line-height:1.1}
+.logo-title{font-weight:800;font-size:17px;text-transform:uppercase;letter-spacing:.5px}
+.logo-sub{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:2px;color:var(--accent)}
+
+.nav{display:flex;align-items:center;gap:32px}
+.nav a{font-size:15px;font-weight:500;color:var(--text-dim);transition:color .2s}
+.nav a:hover{color:var(--accent)}
+
+.btn{
+  display:inline-flex;align-items:center;justify-content:center;gap:8px;
+  padding:14px 24px;border-radius:12px;font-weight:600;font-size:14px;
+  text-transform:uppercase;letter-spacing:.5px;cursor:pointer;border:none;
+  transition:all .25s;
+}
+.btn-primary{
+  background:linear-gradient(135deg,var(--accent),var(--accent-2));
+  color:#fff;box-shadow:0 8px 24px rgba(241,124,52,.3);
+}
+.btn-primary:hover{transform:translateY(-2px);box-shadow:0 12px 30px rgba(241,124,52,.45)}
+.btn-ghost{background:transparent;color:#fff;border:1px solid rgba(255,255,255,.2)}
+.btn-ghost:hover{border-color:var(--accent);color:var(--accent)}
+
+.burger{display:none;flex-direction:column;gap:5px;cursor:pointer;background:none;border:none;padding:8px}
+.burger span{width:24px;height:2px;background:#fff;transition:.3s}
+.burger.active span:nth-child(1){transform:translateY(7px) rotate(45deg)}
+.burger.active span:nth-child(2){opacity:0}
+.burger.active span:nth-child(3){transform:translateY(-7px) rotate(-45deg)}
+
+/* ===== HERO ===== */
+.hero{
+  position:relative;min-height:100vh;display:flex;align-items:center;
+  padding:140px 0 80px;overflow:hidden;
+}
+.hero-bg{
+  position:absolute;inset:0;z-index:0;
+  background-image:url('/img/header.webp');
+  background-size:cover;background-position:center;
+}
+.hero-bg::before{
+  content:'';position:absolute;inset:0;
+  background:linear-gradient(135deg,rgba(24,25,35,.92) 0%,rgba(24,25,35,.75) 60%,rgba(24,25,35,.4) 100%);
+}
+.hero-bg::after{
+  content:'';position:absolute;bottom:0;left:0;right:0;height:200px;
+  background:linear-gradient(to top,var(--bg),transparent);
+}
+.hero-inner{position:relative;z-index:2;display:grid;grid-template-columns:1.1fr .9fr;gap:60px;align-items:center}
+.hero-badge{
+  display:inline-flex;align-items:center;gap:8px;
+  padding:8px 16px;border-radius:50px;
+  background:rgba(241,124,52,.15);border:1px solid rgba(241,124,52,.3);
+  color:var(--accent-2);font-size:13px;font-weight:600;
+  margin-bottom:24px;
+}
+.hero-badge .dot{width:8px;height:8px;border-radius:50%;background:var(--accent);animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.hero h1{
+  font-size:clamp(36px,5vw,64px);font-weight:800;line-height:1.1;
+  margin-bottom:20px;letter-spacing:-1px;
+}
+.hero h1 span{color:var(--accent);display:inline-block}
+.hero-sub{
+  font-size:18px;color:var(--text-dim);margin-bottom:32px;max-width:560px;
+}
+.hero-tags{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:36px}
+.hero-tag{
+  padding:10px 18px;background:rgba(255,255,255,.06);
+  border:1px solid var(--border);border-radius:50px;
+  font-size:14px;font-weight:500;color:#fff;
+}
+.hero-tag strong{color:var(--accent);font-weight:700}
+.hero-cta{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:48px}
+.hero-stats{
+  display:grid;grid-template-columns:repeat(4,1fr);gap:24px;
+  padding-top:32px;border-top:1px solid var(--border);
+}
+.hero-stat-num{font-size:32px;font-weight:800;color:var(--accent);line-height:1}
+.hero-stat-lbl{font-size:13px;color:var(--text-dim);margin-top:6px}
+
+.hero-visual{
+  position:relative;border-radius:24px;overflow:hidden;
+  aspect-ratio:4/5;box-shadow:0 30px 80px rgba(0,0,0,.5);
+}
+.hero-visual img{width:100%;height:100%;object-fit:cover}
+.hero-float{
+  position:absolute;background:rgba(24,25,35,.9);backdrop-filter:blur(10px);
+  border:1px solid var(--border);border-radius:16px;padding:16px 20px;
+  display:flex;align-items:center;gap:12px;
+}
+.hero-float-1{bottom:24px;left:24px;right:24px}
+.hero-float-2{top:24px;right:24px}
+.hero-float-icon{
+  width:44px;height:44px;border-radius:12px;
+  background:linear-gradient(135deg,var(--accent),var(--accent-2));
+  display:flex;align-items:center;justify-content:center;font-size:22px;
+}
+.hero-float-title{font-weight:700;font-size:15px}
+.hero-float-sub{font-size:12px;color:var(--text-dim)}
+
+/* ===== SECTIONS ===== */
+section{padding:100px 0;position:relative}
+.section-head{text-align:center;max-width:720px;margin:0 auto 60px}
+.section-label{
+  display:inline-block;padding:6px 14px;border-radius:50px;
+  background:rgba(241,124,52,.12);color:var(--accent);
+  font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;
+  margin-bottom:16px;
+}
+.section-title{
+  font-size:clamp(28px,3.5vw,44px);font-weight:800;line-height:1.15;
+  margin-bottom:16px;letter-spacing:-.5px;
+}
+.section-title span{color:var(--accent)}
+.section-desc{font-size:17px;color:var(--text-dim)}
+
+/* ===== GUARANTEES ===== */
+.guarantees-grid{
+  display:grid;grid-template-columns:repeat(3,1fr);gap:24px;
+}
+.guarantee{
+  background:var(--bg-2);border:1px solid var(--border);
+  border-radius:20px;overflow:hidden;
+  transition:all .3s;
+}
+.guarantee:hover{transform:translateY(-6px);border-color:rgba(241,124,52,.3);box-shadow:0 20px 40px rgba(0,0,0,.3)}
+.guarantee-img{aspect-ratio:16/10;overflow:hidden}
+.guarantee-img img{width:100%;height:100%;object-fit:cover;transition:transform .5s}
+.guarantee:hover .guarantee-img img{transform:scale(1.05)}
+.guarantee-body{padding:24px}
+.guarantee h3{font-size:19px;font-weight:700;margin-bottom:8px}
+.guarantee p{font-size:14px;color:var(--text-dim);line-height:1.6}
+
+/* ===== ABOUT ===== */
+.about{background:var(--bg-2)}
+.about-grid{display:grid;grid-template-columns:1fr 1fr;gap:60px;align-items:center}
+.about-img{border-radius:24px;overflow:hidden;aspect-ratio:4/3}
+.about-img img{width:100%;height:100%;object-fit:cover}
+.about-text h2{font-size:clamp(28px,3.5vw,40px);font-weight:800;margin-bottom:24px;line-height:1.2}
+.about-text p{color:var(--text-dim);margin-bottom:16px;font-size:16px}
+.about-features{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:32px}
+.about-feat{
+  display:flex;gap:12px;align-items:flex-start;
+  padding:16px;background:rgba(255,255,255,.03);border-radius:12px;
+  border:1px solid var(--border);
+}
+.about-feat-icon{
+  width:36px;height:36px;border-radius:10px;flex-shrink:0;
+  background:rgba(241,124,52,.15);color:var(--accent);
+  display:flex;align-items:center;justify-content:center;font-size:18px;
+}
+.about-feat-title{font-weight:700;font-size:14px;margin-bottom:2px}
+.about-feat-desc{font-size:12px;color:var(--text-dim)}
+
+/* ===== STORIES ===== */
+.stories-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:24px}
+.story{
+  background:var(--bg-2);border:1px solid var(--border);
+  border-radius:20px;padding:28px;transition:all .3s;
+}
+.story:hover{border-color:rgba(241,124,52,.3);transform:translateY(-4px)}
+.story-img{
+  width:72px;height:72px;border-radius:50%;overflow:hidden;margin-bottom:20px;
+  border:3px solid var(--accent);
+}
+.story-img img{width:100%;height:100%;object-fit:cover}
+.story h3{font-size:18px;font-weight:700;margin-bottom:4px}
+.story .story-meta{font-size:13px;color:var(--accent);margin-bottom:14px}
+.story p{font-size:14px;color:var(--text-dim);line-height:1.7}
+
+/* ===== STEPS ===== */
+.steps{background:var(--bg-2)}
+.steps-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:24px}
+.step{
+  position:relative;background:var(--bg);border:1px solid var(--border);
+  border-radius:20px;padding:28px;transition:all .3s;
+}
+.step:hover{border-color:var(--accent);transform:translateY(-4px)}
+.step-num{
+  position:absolute;top:-18px;right:24px;
+  width:48px;height:48px;border-radius:14px;
+  background:linear-gradient(135deg,var(--accent),var(--accent-2));
+  color:#fff;font-weight:800;font-size:20px;
+  display:flex;align-items:center;justify-content:center;
+  box-shadow:0 8px 20px rgba(241,124,52,.35);
+}
+.step-icon{
+  width:56px;height:56px;border-radius:14px;margin-bottom:20px;
+  background:rgba(241,124,52,.1);color:var(--accent);
+  display:flex;align-items:center;justify-content:center;font-size:26px;
+}
+.step h3{font-size:18px;font-weight:700;margin-bottom:8px}
+.step p{font-size:14px;color:var(--text-dim);line-height:1.6}
+
+/* ===== JOBS ===== */
+.jobs-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:24px}
+.job{
+  background:var(--bg-2);border:1px solid var(--border);
+  border-radius:20px;overflow:hidden;transition:all .3s;
+}
+.job:hover{transform:translateY(-6px);border-color:rgba(241,124,52,.3);box-shadow:0 20px 40px rgba(0,0,0,.3)}
+.job-img{aspect-ratio:16/10;overflow:hidden;position:relative}
+.job-img img{width:100%;height:100%;object-fit:cover;transition:transform .5s}
+.job:hover .job-img img{transform:scale(1.05)}
+.job-price{
+  position:absolute;top:14px;right:14px;
+  padding:6px 12px;border-radius:50px;
+  background:rgba(24,25,35,.85);backdrop-filter:blur(10px);
+  border:1px solid var(--border);
+  font-size:13px;font-weight:700;color:var(--accent);
+}
+.job-body{padding:22px}
+.job h3{font-size:19px;font-weight:700;margin-bottom:6px}
+.job-desc{font-size:14px;color:var(--text-dim)}
+
+/* ===== REVIEWS ===== */
+.reviews{background:var(--bg-2)}
+.reviews-slider{
+  display:flex;gap:20px;overflow-x:auto;scroll-snap-type:x mandatory;
+  padding-bottom:20px;scrollbar-width:thin;scrollbar-color:var(--accent) var(--bg);
+}
+.reviews-slider::-webkit-scrollbar{height:6px}
+.reviews-slider::-webkit-scrollbar-track{background:var(--bg);border-radius:3px}
+.reviews-slider::-webkit-scrollbar-thumb{background:var(--accent);border-radius:3px}
+.review{
+  flex:0 0 380px;scroll-snap-align:start;
+  background:var(--bg);border:1px solid var(--border);
+  border-radius:20px;padding:28px;
+}
+.review-head{display:flex;gap:14px;align-items:center;margin-bottom:16px}
+.review-avatar{
+  width:52px;height:52px;border-radius:50%;overflow:hidden;
+  background:linear-gradient(135deg,var(--accent),var(--accent-2));
+  display:flex;align-items:center;justify-content:center;
+  color:#fff;font-weight:700;font-size:18px;flex-shrink:0;
+}
+.review-name{font-weight:700;font-size:15px}
+.review-role{font-size:12px;color:var(--text-dim)}
+.review-text{font-size:14px;color:var(--text-dim);line-height:1.7;margin-bottom:16px}
+.review-stars{color:var(--accent);font-size:16px;letter-spacing:2px}
+
+/* ===== STATS ===== */
+.stats-grid{
+  display:grid;grid-template-columns:repeat(4,1fr);gap:24px;
+  background:linear-gradient(135deg,var(--bg-2),var(--bg-3));
+  border:1px solid var(--border);border-radius:24px;padding:48px 32px;
+}
+.stat{text-align:center}
+.stat-num{
+  font-size:clamp(36px,4.5vw,56px);font-weight:800;line-height:1;
+  background:linear-gradient(135deg,var(--accent),var(--accent-2));
+  -webkit-background-clip:text;background-clip:text;color:transparent;
+  margin-bottom:8px;
+}
+.stat-lbl{font-size:14px;color:var(--text-dim)}
+
+/* ===== PARTNERS ===== */
+.partners{background:var(--bg-2)}
+.partners-grid{
+  display:grid;grid-template-columns:repeat(4,1fr);gap:20px;
+}
+.partner{
+  background:var(--bg);border:1px solid var(--border);border-radius:16px;
+  padding:28px;display:flex;align-items:center;justify-content:center;
+  aspect-ratio:2/1;transition:all .3s;
+  filter:grayscale(1);opacity:.6;
+}
+.partner:hover{filter:grayscale(0);opacity:1;border-color:var(--accent)}
+.partner img{max-width:100%;max-height:100%;object-fit:contain}
+
+/* ===== FAQ ===== */
+.faq{background:var(--bg-2)}
+.faq-list{max-width:800px;margin:0 auto;display:flex;flex-direction:column;gap:12px}
+.faq-item{
+  background:var(--bg);border:1px solid var(--border);
+  border-radius:16px;overflow:hidden;transition:border-color .3s;
+}
+.faq-item:hover{border-color:rgba(241,124,52,.3)}
+.faq-q{
+  width:100%;display:flex;align-items:center;justify-content:space-between;gap:16px;
+  padding:22px 24px;background:none;border:none;color:var(--text);
+  font-size:16px;font-weight:600;font-family:inherit;text-align:left;
+  cursor:pointer;line-height:1.4;transition:color .3s;
+}
+.faq-q:hover{color:var(--accent)}
+.faq-q-icon{
+  width:28px;height:28px;border-radius:50%;flex-shrink:0;
+  background:rgba(241,124,52,.12);color:var(--accent);
+  display:flex;align-items:center;justify-content:center;
+  font-size:18px;font-weight:700;transition:all .3s;
+}
+.faq-item.open .faq-q-icon{background:var(--accent);color:#fff;transform:rotate(45deg)}
+.faq-a{
+  max-height:0;overflow:hidden;transition:max-height .35s ease,padding .35s ease;
+}
+.faq-item.open .faq-a{max-height:400px}
+.faq-a-inner{
+  padding:0 24px 22px;color:var(--text-dim);font-size:15px;line-height:1.7;
+}
+
+/* ===== CTA ===== */
+.cta{
+  position:relative;padding:100px 0;overflow:hidden;
+}
+.cta-inner{
+  position:relative;z-index:2;
+  background:linear-gradient(135deg,var(--accent),var(--accent-2));
+  border-radius:32px;padding:60px 48px;text-align:center;
+  box-shadow:0 30px 80px rgba(241,124,52,.3);
+  overflow:hidden;
+}
+.cta-inner::before{
+  content:'';position:absolute;top:-50%;right:-20%;
+  width:500px;height:500px;border-radius:50%;
+  background:rgba(255,255,255,.1);
+}
+.cta h2{font-size:clamp(28px,3.5vw,42px);font-weight:800;margin-bottom:16px;color:#fff;position:relative}
+.cta p{font-size:17px;color:rgba(255,255,255,.9);margin-bottom:32px;max-width:600px;margin-left:auto;margin-right:auto;position:relative}
+.cta-buttons{display:flex;gap:14px;justify-content:center;flex-wrap:wrap;position:relative}
+.btn-white{background:#fff;color:var(--accent);font-weight:700}
+.btn-white:hover{transform:translateY(-2px);box-shadow:0 10px 30px rgba(0,0,0,.2)}
+.btn-outline-white{background:transparent;color:#fff;border:2px solid rgba(255,255,255,.4)}
+.btn-outline-white:hover{border-color:#fff;background:rgba(255,255,255,.1)}
+
+/* ===== FOOTER ===== */
+.footer{background:var(--bg-2);border-top:1px solid var(--border);padding:60px 0 30px}
+.footer-grid{display:grid;grid-template-columns:1.5fr 1fr 1fr 1.2fr;gap:40px;margin-bottom:40px}
+.footer-brand p{color:var(--text-dim);font-size:14px;margin-top:16px;line-height:1.7}
+.footer h4{font-size:16px;font-weight:700;margin-bottom:20px;color:#fff}
+.footer-links{list-style:none}
+.footer-links li{margin-bottom:10px}
+.footer-links a{color:var(--text-dim);font-size:14px;transition:color .2s}
+.footer-links a:hover{color:var(--accent)}
+.footer-contact-item{display:flex;gap:12px;margin-bottom:14px;align-items:flex-start}
+.footer-contact-icon{
+  width:36px;height:36px;border-radius:10px;flex-shrink:0;
+  background:rgba(241,124,52,.15);color:var(--accent);
+  display:flex;align-items:center;justify-content:center;font-size:16px;
+}
+.footer-contact-text{font-size:14px;color:var(--text-dim)}
+.footer-contact-text strong{display:block;color:#fff;font-size:15px;margin-bottom:2px}
+.footer-bottom{
+  padding-top:24px;border-top:1px solid var(--border);
+  text-align:center;color:var(--text-dim);font-size:13px;
+}
+
+/* ===== FLOATING BUTTONS ===== */
+.float-btns{position:fixed;bottom:24px;right:24px;z-index:90;display:flex;flex-direction:column;gap:12px}
+.float-btn{
+  width:56px;height:56px;border-radius:50%;
+  display:flex;align-items:center;justify-content:center;
+  font-size:22px;color:#fff;border:none;cursor:pointer;
+  box-shadow:0 10px 30px rgba(0,0,0,.3);transition:all .3s;
+}
+.float-btn:hover{transform:scale(1.1)}
+.float-btn.phone{background:linear-gradient(135deg,#4cd964,#34c759)}
+.float-btn.top{background:var(--accent);opacity:0;visibility:hidden;pointer-events:none}
+.float-btn.top.visible{opacity:1;visibility:visible;pointer-events:auto}
+
+/* ===== MODAL ===== */
+.modal{
+  position:fixed;inset:0;z-index:200;
+  background:rgba(0,0,0,.7);backdrop-filter:blur(8px);
+  display:none;align-items:center;justify-content:center;padding:20px;
+}
+.modal.active{display:flex;animation:fadeIn .3s}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+.modal-box{
+  background:var(--bg-2);border:1px solid var(--border);
+  border-radius:24px;padding:40px;max-width:480px;width:100%;
+  position:relative;animation:slideUp .3s;
+}
+@keyframes slideUp{from{transform:translateY(30px);opacity:0}to{transform:translateY(0);opacity:1}}
+.modal-close{
+  position:absolute;top:16px;right:16px;
+  width:36px;height:36px;border-radius:50%;
+  background:rgba(255,255,255,.05);border:none;color:#fff;
+  font-size:20px;cursor:pointer;transition:all .2s;
+}
+.modal-close:hover{background:var(--accent)}
+.modal h3{font-size:26px;font-weight:800;margin-bottom:8px}
+.modal p{color:var(--text-dim);margin-bottom:24px;font-size:14px}
+.form-group{margin-bottom:16px}
+.form-group input{
+  width:100%;padding:14px 16px;border-radius:12px;
+  background:var(--bg);border:1px solid var(--border);
+  color:#fff;font-size:15px;font-family:inherit;transition:border-color .2s;
+}
+.form-group input:focus{outline:none;border-color:var(--accent)}
+.modal .btn{width:100%;padding:16px}
+
+/* ===== REVEAL ANIMATION ===== */
+.reveal{opacity:0;transform:translateY(30px);transition:all .7s}
+.reveal.visible{opacity:1;transform:translateY(0)}
+
+/* ===== RESPONSIVE ===== */
+@media(max-width:1200px){
+  .container{padding:0 20px}
+  .hero-inner{gap:40px}
+  .guarantees-grid,.stories-grid,.steps-grid,.jobs-grid{gap:20px}
+}
+
+@media(max-width:1024px){
+  .hero-inner{grid-template-columns:1fr;gap:40px}
+  .hero-visual{max-width:400px;margin:0 auto}
+  .guarantees-grid,.stories-grid,.steps-grid,.jobs-grid{grid-template-columns:repeat(2,1fr)}
+  .about-grid{grid-template-columns:1fr;gap:40px}
+  .stats-grid{grid-template-columns:repeat(2,1fr)}
+  .partners-grid{grid-template-columns:repeat(2,1fr)}
+  .footer-grid{grid-template-columns:1fr 1fr;gap:32px}
+  .review{flex:0 0 340px}
+}
+
+@media(max-width:768px){
+  section{padding:70px 0}
+  .container{padding:0 16px}
+
+  .header-inner{padding:14px 16px}
+  .logo-mark{width:40px;height:40px;font-size:16px}
+  .logo-title{font-size:15px}
+  .logo-sub{font-size:10px}
+
+  .nav{
+    position:fixed;
+    top:72px;
+    left:0;
+    right:0;
+    background:var(--bg-2);
+    flex-direction:column;
+    align-items:stretch;
+    padding:0;
+    gap:0;
+    max-height:0;
+    overflow:hidden;
+    transition:max-height .4s ease-in-out;
+    border-bottom:none;
+    box-shadow:0 10px 30px rgba(0,0,0,.3);
+  }
+  .nav.open{
+    max-height:calc(100vh - 72px);
+    overflow-y:auto;
+    padding:16px;
+    border-bottom:1px solid var(--border);
+  }
+  .nav a{
+    padding:16px 0;
+    border-bottom:1px solid var(--border);
+    font-size:16px;
+    text-align:left;
+  }
+  .nav a:last-of-type{
+    border-bottom:none;
+  }
+  .nav .btn{
+    margin-top:16px;
+    width:100%;
+  }
+  .burger{display:flex}
+
+  .hero{padding:100px 0 60px;min-height:auto}
+  .hero h1{font-size:32px;margin-bottom:16px}
+  .hero-sub{font-size:16px;margin-bottom:24px}
+  .hero-badge{font-size:12px;padding:6px 14px;margin-bottom:20px}
+  .hero-tags{gap:8px;margin-bottom:28px}
+  .hero-tag{padding:8px 14px;font-size:13px}
+  .hero-cta{gap:10px;margin-bottom:36px}
+  .hero-cta .btn{flex:1;min-width:140px;padding:12px 20px;font-size:13px}
+  .hero-stats{grid-template-columns:repeat(2,1fr);gap:20px;padding-top:24px}
+  .hero-stat-num{font-size:28px}
+  .hero-stat-lbl{font-size:12px}
+  .hero-visual{max-width:320px}
+  .hero-float{padding:12px 16px}
+  .hero-float-icon{width:38px;height:38px;font-size:18px}
+  .hero-float-title{font-size:13px}
+  .hero-float-sub{font-size:11px}
+
+  .section-head{margin-bottom:40px}
+  .section-title{font-size:28px}
+  .section-desc{font-size:15px}
+
+  .guarantees-grid,.stories-grid,.steps-grid,.jobs-grid{grid-template-columns:1fr}
+  .guarantee-body{padding:20px}
+  .guarantee h3{font-size:17px}
+
+  .about-text h2{font-size:28px}
+  .about-text p{font-size:15px}
+  .about-features{grid-template-columns:1fr}
+
+  .step{padding:24px}
+  .step-num{width:42px;height:42px;font-size:18px;top:-16px;right:20px}
+  .step-icon{width:48px;height:48px;font-size:22px;margin-bottom:16px}
+  .step h3{font-size:17px}
+
+  .job-body{padding:18px}
+  .job h3{font-size:17px}
+
+  .story{padding:24px}
+  .story-img{width:64px;height:64px;margin-bottom:16px}
+  .story h3{font-size:17px}
+
+  .review{flex:0 0 85%;padding:24px}
+  .review-avatar{width:48px;height:48px;font-size:16px}
+  .review-name{font-size:14px}
+  .review-text{font-size:13px}
+
+  .stats-grid{padding:36px 24px;gap:20px}
+  .stat-num{font-size:36px}
+  .stat-lbl{font-size:13px}
+
+  .partner{padding:20px}
+
+  .faq-q{padding:18px 20px;font-size:15px}
+  .faq-q-icon{width:26px;height:26px;font-size:16px}
+  .faq-a-inner{padding:0 20px 18px;font-size:14px}
+
+  .cta{padding:70px 0}
+  .cta-inner{padding:40px 24px;border-radius:24px}
+  .cta h2{font-size:28px}
+  .cta p{font-size:15px;margin-bottom:24px}
+  .cta-buttons .btn{flex:1;min-width:140px;padding:12px 20px;font-size:13px}
+
+  .footer{padding:50px 0 24px}
+  .footer-grid{grid-template-columns:1fr;gap:28px}
+  .footer h4{font-size:15px;margin-bottom:16px}
+
+  .float-btns{bottom:16px;right:16px;gap:10px}
+  .float-btn{width:50px;height:50px;font-size:20px}
+
+  .modal-box{padding:32px 24px}
+  .modal h3{font-size:22px}
+  .modal p{font-size:13px;margin-bottom:20px}
+  .form-group input{padding:12px 14px;font-size:14px}
+}
+
+@media(max-width:480px){
+  .container{padding:0 14px}
+  section{padding:60px 0}
+
+  .header-inner{padding:12px 14px}
+  .logo-mark{width:36px;height:36px;font-size:14px}
+  .logo-title{font-size:13px}
+  .logo-sub{font-size:9px;letter-spacing:1.5px}
+
+  .nav{
+    top:68px;
+  }
+  .nav.open{
+    max-height:calc(100vh - 68px);
+  }
+
+  .hero{padding:90px 0 50px}
+  .hero h1{font-size:28px;letter-spacing:-.5px}
+  .hero-sub{font-size:15px;line-height:1.5}
+  .hero-badge{font-size:11px;padding:6px 12px}
+  .hero-tags{gap:6px}
+  .hero-tag{padding:7px 12px;font-size:12px}
+  .hero-cta{flex-direction:column;gap:8px}
+  .hero-cta .btn{width:100%;padding:14px 20px;font-size:14px}
+  .hero-stats{gap:16px}
+  .hero-stat-num{font-size:24px}
+  .hero-stat-lbl{font-size:11px}
+  .hero-visual{max-width:280px}
+  .hero-float-1{bottom:16px;left:16px;right:16px}
+  .hero-float-2{top:16px;right:16px}
+  .hero-float{padding:10px 14px;gap:10px}
+  .hero-float-icon{width:34px;height:34px;font-size:16px}
+  .hero-float-title{font-size:12px}
+  .hero-float-sub{font-size:10px}
+
+  .section-head{margin-bottom:32px}
+  .section-label{font-size:11px;padding:5px 12px;margin-bottom:12px}
+  .section-title{font-size:24px;line-height:1.2}
+  .section-desc{font-size:14px}
+
+  .guarantee-body{padding:18px}
+  .guarantee h3{font-size:16px;margin-bottom:6px}
+  .guarantee p{font-size:13px}
+
+  .about-text h2{font-size:24px}
+  .about-text p{font-size:14px}
+  .about-feat{padding:14px;gap:10px}
+  .about-feat-icon{width:32px;height:32px;font-size:16px}
+  .about-feat-title{font-size:13px}
+  .about-feat-desc{font-size:11px}
+
+  .step{padding:20px}
+  .step-num{width:38px;height:38px;font-size:16px;top:-14px;right:16px}
+  .step-icon{width:44px;height:44px;font-size:20px;margin-bottom:14px}
+  .step h3{font-size:16px}
+  .step p{font-size:13px}
+
+  .job-body{padding:16px}
+  .job h3{font-size:16px}
+  .job-desc{font-size:13px}
+  .job-price{padding:5px 10px;font-size:12px;top:10px;right:10px}
+
+  .story{padding:20px}
+  .story-img{width:56px;height:56px;margin-bottom:14px}
+  .story h3{font-size:16px}
+  .story .story-meta{font-size:12px;margin-bottom:12px}
+  .story p{font-size:13px}
+
+  .review{flex:0 0 90%;padding:20px}
+  .review-head{gap:12px;margin-bottom:14px}
+  .review-avatar{width:44px;height:44px;font-size:15px}
+  .review-name{font-size:13px}
+  .review-role{font-size:11px}
+  .review-text{font-size:12px;line-height:1.6;margin-bottom:14px}
+  .review-stars{font-size:14px}
+
+  .stats-grid{padding:32px 20px;gap:16px}
+  .stat-num{font-size:32px}
+  .stat-lbl{font-size:12px}
+
+  .partner{padding:16px}
+
+  .faq-q{padding:16px;font-size:14px}
+  .faq-q-icon{width:24px;height:24px;font-size:15px}
+  .faq-a-inner{padding:0 16px 16px;font-size:13px}
+
+  .cta{padding:60px 0}
+  .cta-inner{padding:32px 20px;border-radius:20px}
+  .cta h2{font-size:24px}
+  .cta p{font-size:14px;margin-bottom:20px}
+  .cta-buttons{flex-direction:column;gap:8px}
+  .cta-buttons .btn{width:100%;padding:14px 20px;font-size:14px}
+
+  .footer{padding:40px 0 20px}
+  .footer h4{font-size:14px}
+  .footer-links a{font-size:13px}
+  .footer-contact-text{font-size:13px}
+  .footer-contact-text strong{font-size:14px}
+  .footer-bottom{font-size:12px}
+
+  .float-btns{bottom:14px;right:14px}
+  .float-btn{width:46px;height:46px;font-size:18px}
+
+  .modal-box{padding:28px 20px}
+  .modal h3{font-size:20px}
+  .modal p{font-size:12px}
+  .form-group input{padding:12px 14px;font-size:13px}
+  .modal .btn{padding:14px;font-size:13px}
+}
+
+@media(max-width:360px){
+  .hero h1{font-size:26px}
+  .hero-sub{font-size:14px}
+  .hero-tag{font-size:11px;padding:6px 10px}
+  .hero-stat-num{font-size:22px}
+  .section-title{font-size:22px}
+  .cta h2{font-size:22px}
+}
+</style>
+</head>
+<body itemscope itemtype="https://schema.org/WebPage">
+<div class="jsster-hp" style="position:absolute;left:-9999px" aria-hidden="true">
+  <input type="text" tabindex="-1" autocomplete="off">
+</div>
+
+<!-- HEADER -->
+<header class="header" role="banner">
+  <div class="header-inner">
+    <a href="https://дом-помощи.рф/" class="logo" aria-label="Рабочий Дом в Москве — главная страница">
+      <div class="logo-mark" aria-hidden="true">РД</div>
+      <div class="logo-text">
+        <span class="logo-title">Рабочий дом</span>
+        <span class="logo-sub">В Москве</span>
+      </div>
+    </a>
+    <nav class="nav" id="nav" role="navigation" aria-label="Основная навигация">
+      <a href="#guarantees">Преимущества</a>
+      <a href="#about">О нас</a>
+      <a href="#jobs">Вакансии</a>
+      <a href="#reviews">Отзывы</a>
+      <a href="#faq">FAQ</a>
+      <a href="#contacts">Контакты</a>
+      <button class="btn btn-primary" onclick="openModal()" aria-label="Заказать обратный звонок">Заказать звонок</button>
+    </nav>
+    <button class="burger" id="burger" aria-label="Открыть меню навигации" aria-expanded="false">
+      <span></span><span></span><span></span>
+    </button>
+  </div>
+</header>
+
+<main role="main">
+
+<!-- HERO -->
+<section class="hero" aria-label="Главный баннер — Рабочий дом в Москве">
+  <div class="hero-bg" role="img" aria-label="Фотография интерьера рабочего дома в Москве"></div>
+  <div class="container">
+    <div class="hero-inner">
+      <div>
+        <div class="hero-badge"><span class="dot"></span>Помощь в трудной ситуации · 24/7</div>
+        <h1 itemprop="name">Рабочий дом в Москве — бесплатное жильё, питание и <span>работа</span></h1>
+        <p class="hero-sub" itemprop="description">Помогаем людям в сложной жизненной ситуации вернуться к полноценной жизни. Заселение в день обращения. Ежедневные выплаты от 2 000 ₽.</p>
+        <div class="hero-tags">
+          <div class="hero-tag">🏠 <strong>Проживание</strong>&nbsp;бесплатно</div>
+          <div class="hero-tag">🍲 <strong>Питание</strong>&nbsp;3 раза в день</div>
+          <div class="hero-tag">💼 <strong>Зарплата</strong>&nbsp;от 2 000 ₽/день</div>
+          <div class="hero-tag">📄 <strong>Документы</strong>&nbsp;восстановим</div>
+        </div>
+        <div class="hero-cta">
+          <button class="btn btn-primary" onclick="openModal()" aria-label="Заказать обратный звонок бесплатно">Заказать звонок →</button>
+          <a href="tel:+79010787603" class="btn btn-ghost" aria-label="Позвонить по телефону +7 901 078-76-03">📞 +7 (901) 078-76-03</a>
+        </div>
+        <div class="hero-stats">
+          <div><div class="hero-stat-num">1200+</div><div class="hero-stat-lbl">Спасённых жизней</div></div>
+          <div><div class="hero-stat-num">20</div><div class="hero-stat-lbl">Лет опыта</div></div>
+          <div><div class="hero-stat-num">380+</div><div class="hero-stat-lbl">Филиалов</div></div>
+          <div><div class="hero-stat-num">24/7</div><div class="hero-stat-lbl">Поддержка</div></div>
+        </div>
+      </div>
+      <div class="hero-visual">
+        <img src="/img/pomosh2.webp" alt="Рабочий дом в Москве — бесплатное жильё и работа с ежедневными выплатами" width="600" height="750" loading="eager" fetchpriority="high">
+        <div class="hero-float hero-float-1">
+          <div class="hero-float-icon">✓</div>
+          <div>
+            <div class="hero-float-title">Заселяем сразу</div>
+            <div class="hero-float-sub">Выплаты в первый день</div>
+          </div>
+        </div>
+        <div class="hero-float hero-float-2">
+          <div class="hero-float-icon">₽</div>
+          <div>
+            <div class="hero-float-title">от 2 000 ₽</div>
+            <div class="hero-float-sub">ежедневно</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- GUARANTEES -->
+<section id="guarantees" aria-label="Преимущества Рабочего Дома">
+  <div class="container">
+    <div class="section-head reveal">
+      <span class="section-label">Почему мы</span>
+      <h2 class="section-title">Всё, что нужно для <span>новой жизни</span></h2>
+      <p class="section-desc">Комплексная поддержка: от крыши над головой до трудоустройства и восстановления документов</p>
+    </div>
+    <div class="guarantees-grid">
+      <article class="guarantee reveal">
+        <div class="guarantee-img"><img src="/img/oplata.webp" alt="Ежедневная оплата труда от 2000 рублей в Рабочем Доме Москвы" loading="lazy" width="640" height="400"></div>
+        <div class="guarantee-body">
+          <h3>Оплата от 2 000 ₽/день</h3>
+          <p>Ежедневные выплаты зарплаты + дорожные. Деньги сразу на руки.</p>
+        </div>
+      </article>
+      <article class="guarantee reveal">
+        <div class="guarantee-img"><img src="/img/zaselenie.webp" alt="Бесплатное заселение в рабочий дом в день обращения" loading="lazy" width="640" height="400"></div>
+        <div class="guarantee-body">
+          <h3>Заселяем сразу</h3>
+          <p>Выплаты и проживание в день обращения. Не нужно ждать.</p>
+        </div>
+      </article>
+      <article class="guarantee reveal">
+        <div class="guarantee-img"><img src="/img/pitanie.webp" alt="Трёхразовое бесплатное питание в Рабочем Доме" loading="lazy" width="640" height="400"></div>
+        <div class="guarantee-body">
+          <h3>Трёхразовое питание</h3>
+          <p>Домашняя кухня: горячие завтраки и обеды, мясные блюда, свежие салаты и паёк с собой на смену.</p>
+        </div>
+      </article>
+      <article class="guarantee reveal">
+        <div class="guarantee-img"><img src="/img/proezd.webp" alt="Оплата проезда и покупка одежды для работников" loading="lazy" width="640" height="400"></div>
+        <div class="guarantee-body">
+          <h3>Оплачиваем проезд и одежду</h3>
+          <p>Вам не придётся ждать и что-то оплачивать. Остановиться можно прямо сейчас.</p>
+        </div>
+      </article>
+      <article class="guarantee reveal">
+        <div class="guarantee-img"><img src="/img/uborka.webp" alt="Домработница — уборка, готовка, стирка в Рабочем Доме" loading="lazy" width="640" height="400"></div>
+        <div class="guarantee-body">
+          <h3>Уборка и быт включены</h3>
+          <p>В доме всегда есть работник, который поддерживает порядок, готовит и убирается.</p>
+        </div>
+      </article>
+      <article class="guarantee reveal">
+        <div class="guarantee-img"><img src="/img/dokumenty.webp" alt="Поможем восстановить паспорт, СНИЛС, ИНН и другие документы — даже если у вас ничего нет на руках." loading="lazy" width="640" height="400"></div>
+        <div class="guarantee-body">
+          <h3>Восстановление документов</h3>
+          <p>Поможем восстановить паспорт, СНИЛС, ИНН и другие документы — даже если у вас ничего нет на руках.</p>
+        </div>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- ABOUT -->
+<section class="about" id="about" aria-label="О Рабочем Доме в Москве">
+  <div class="container">
+    <div class="about-grid">
+      <div class="about-img reveal">
+        <img src="/img/pomosh1.webp" alt="О Рабочем Доме в Москве — помощь людям в трудной жизненной ситуации" loading="lazy" width="800" height="600">
+      </div>
+      <div class="about-text reveal">
+        <span class="section-label">О нас</span>
+        <h2>Второй шанс начать <span style="color:var(--accent)">с чистого листа</span></h2>
+        <p>Оказались в сложной жизненной ситуации? Потеряли работу, жильё, документы? «Рабочий Дом» — это бесплатное жильё с работой и реальная помощь в ресоциализации.</p>
+        <p>Мы предлагаем временное проживание с трудоустройством и всестороннюю поддержку на пути к восстановлению и независимой жизни.</p>
+        <p>К нам обращаются, когда нужна не просто работа с проживанием в Москве, а реальный шанс выбраться из тяжёлой ситуации. Мы не классическая вахта — вы живёте в стационарном доме, а не на объекте. Вот кто приходит к нам чаще всего:</p>
+        <p>— те, кто потерял работу и жильё и не знает, с чего начать;<br>— люди после освобождения, которым нужно трудоустройство с проживанием и восстановление документов;<br>— те, кто приехал в Москву без знакомых и средств, ищет работу с ежедневными выплатами;<br>— семейные пары и женщины, оказавшиеся без крыши над головой.</p>
+        <p>Каждому даём не просто ночлег, а питание, стабильную работу и помощь с документами. Наш работный дом помогает бездомным и людям в кризисе вернуться к самостоятельной жизни — без предоплат, без залогов и без бюрократии. Все, кто готов соблюдать правила проживания и работать, получают поддержку с первого дня.</p>
+        <div class="about-features">
+          <div class="about-feat">
+            <div class="about-feat-icon">🏠</div>
+            <div><div class="about-feat-title">Уютное жильё</div><div class="about-feat-desc">Все бытовые удобства</div></div>
+          </div>
+          <div class="about-feat">
+            <div class="about-feat-icon">💼</div>
+            <div><div class="about-feat-title">Стабильная работа</div><div class="about-feat-desc">По вашим навыкам</div></div>
+          </div>
+          <div class="about-feat">
+            <div class="about-feat-icon">🤝</div>
+            <div><div class="about-feat-title">Поддержка 24/7</div><div class="about-feat-desc">Психолог и куратор</div></div>
+          </div>
+          <div class="about-feat">
+            <div class="about-feat-icon">📄</div>
+            <div><div class="about-feat-title">Документы</div><div class="about-feat-desc">Поможем восстановить</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- HOW IT WORKS -->
+<section class="steps" aria-label="Как начать работу с Рабочим Домом — 6 шагов">
+  <div class="container">
+    <div class="section-head reveal">
+      <span class="section-label">Как мы работаем</span>
+      <h2 class="section-title">6 простых шагов к <span>новой жизни</span></h2>
+      <p class="section-desc">Прозрачный процесс от первого звонка до самостоятельной жизни</p>
+    </div>
+    <div class="steps-grid">
+      <article class="step reveal"><div class="step-num">1</div><div class="step-icon">📞</div><h3>Подайте заявку</h3><p>Свяжитесь с нами по телефону или закажите обратный звонок.</p></article>
+      <article class="step reveal"><div class="step-num">2</div><div class="step-icon">💬</div><h3>Общение</h3><p>Обсудим ваши потребности и найдём подходящее решение.</p></article>
+      <article class="step reveal"><div class="step-num">3</div><div class="step-icon">🏠</div><h3>Получите жильё</h3><p>Предоставим комфортное временное проживание в день обращения.</p></article>
+      <article class="step reveal"><div class="step-num">4</div><div class="step-icon">💼</div><h3>Найдите работу</h3><p>Поможем найти работу, соответствующую вашим навыкам.</p></article>
+      <article class="step reveal"><div class="step-num">5</div><div class="step-icon">🤝</div><h3>Получите поддержку</h3><p>Поддерживаем на каждом этапе, помогая адаптироваться.</p></article>
+      <article class="step reveal"><div class="step-num">6</div><div class="step-icon">🚀</div><h3>Развивайтесь</h3><p>Получите новые навыки и постройте самостоятельную жизнь.</p></article>
+    </div>
+  </div>
+</section>
+
+<!-- JOBS -->
+<section id="jobs" aria-label="Вакансии в Рабочем Доме — работа в Москве с проживанием">
+  <div class="container">
+    <div class="section-head reveal">
+      <span class="section-label">Вакансии</span>
+      <h2 class="section-title">Кем можно <span>работать?</span></h2>
+      <p class="section-desc">В нашем рабочем центре в Москве всегда есть подходящая работа с ежедневной оплатой</p>
+    </div>
+    <div class="jobs-grid">
+      <article class="job reveal" itemscope itemtype="https://schema.org/JobPosting">
+        <div class="job-img"><img src="/img/demontazhnik.webp" alt="Вакансия демонтажник в Москве — от 2000 рублей в день, бесплатное жильё" loading="lazy" width="640" height="400"><div class="job-price">от 2 000 ₽</div></div>
+        <div class="job-body"><h3 itemprop="title">Демонтажник</h3><p class="job-desc" itemprop="description">Работа на строительных объектах Москвы</p></div>
+      </article>
+      <article class="job reveal" itemscope itemtype="https://schema.org/JobPosting">
+        <div class="job-img"><img src="/img/dvornik.webp" alt="Вакансия дворник в Москве — от 2000 рублей в день, бесплатное проживание" loading="lazy" width="640" height="400"><div class="job-price">от 2 000 ₽</div></div>
+        <div class="job-body"><h3 itemprop="title">Дворник</h3><p class="job-desc" itemprop="description">Уборка придомовых территорий</p></div>
+      </article>
+      <article class="job reveal" itemscope itemtype="https://schema.org/JobPosting">
+        <div class="job-img"><img src="/img/zemlekop.webp" alt="Вакансия землекоп в Москве — ежедневная оплата от 2000 рублей" loading="lazy" width="640" height="400"><div class="job-price">от 2 000 ₽</div></div>
+        <div class="job-body"><h3 itemprop="title">Землекоп</h3><p class="job-desc" itemprop="description">Земляные работы на объектах</p></div>
+      </article>
+      <article class="job reveal" itemscope itemtype="https://schema.org/JobPosting">
+        <div class="job-img"><img src="/img/podsobnyj-rabochij.webp" alt="Вакансия подсобный рабочий в Москве — работа с проживанием" loading="lazy" width="640" height="400"><div class="job-price">от 2 000 ₽</div></div>
+        <div class="job-body"><h3 itemprop="title">Подсобный рабочий</h3><p class="job-desc" itemprop="description">Помощь на стройке и складах</p></div>
+      </article>
+      <article class="job reveal" itemscope itemtype="https://schema.org/JobPosting">
+        <div class="job-img"><img src="/img/raznorabochij.webp" alt="Вакансия разнорабочий в Москве — ежедневные выплаты" loading="lazy" width="640" height="400"><div class="job-price">от 2 000 ₽</div></div>
+        <div class="job-body"><h3 itemprop="title">Разнорабочий</h3><p class="job-desc" itemprop="description">Универсальные работы</p></div>
+      </article>
+      <article class="job reveal" itemscope itemtype="https://schema.org/JobPosting">
+        <div class="job-img"><img src="/img/specialist.webp" alt="Вакансия специалист в Москве — от 3500 рублей в день" loading="lazy" width="640" height="400"><div class="job-price">от 3 500 ₽</div></div>
+        <div class="job-body"><h3 itemprop="title">Специалист</h3><p class="job-desc" itemprop="description">Квалифицированный труд</p></div>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- STORIES -->
+<section class="about" aria-label="Истории успеха наших постояльцев">
+  <div class="container">
+    <div class="section-head reveal">
+      <span class="section-label">Истории успеха</span>
+      <h2 class="section-title">Они начали <span>с нуля</span></h2>
+      <p class="section-desc">Реальные истории людей, которым мы помогли вернуться к полноценной жизни</p>
+    </div>
+    <div class="stories-grid">
+      <article class="story reveal">
+        <div class="story-img"><img src="/img/otzyv1.webp" alt="Иван Петров — история успеха, водитель, 35 лет" loading="lazy" width="72" height="72"></div>
+        <h3>Иван Петров</h3>
+        <div class="story-meta">35 лет · водитель</div>
+        <p>Потерял работу и жильё после тяжёлой болезни. Восстановили документы, нашли работу. Сейчас снимает собственную квартиру.</p>
+      </article>
+      <article class="story reveal">
+        <div class="story-img"><img src="/img/otzyv2.webp" alt="Мария Сидорова — история успеха, штукатур, 42 года" loading="lazy" width="72" height="72"></div>
+        <h3>Мария Сидорова</h3>
+        <div class="story-meta">42 года · штукатур</div>
+        <p>После освобождения предоставили жильё, работу и психолога. Сегодня работает штукатуром и строит новую жизнь.</p>
+      </article>
+      <article class="story reveal">
+        <div class="story-img"><img src="/img/otzyv3.webp" alt="Алексей Смирнов — история успеха, мастер, 28 лет" loading="lazy" width="72" height="72"></div>
+        <h3>Алексей Смирнов</h3>
+        <div class="story-meta">28 лет · мастер</div>
+        <p>Прошёл курс реабилитации, нашёл работу в мастерской и восстановил отношения с близкими. Ведёт трезвый образ жизни.</p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- REVIEWS -->
+<section class="reviews" id="reviews" aria-label="Отзывы о Рабочем Доме в Москве">
+  <div class="container">
+    <div class="section-head reveal">
+      <span class="section-label">Отзывы</span>
+      <h2 class="section-title">О нас <span>говорят</span></h2>
+      <p class="section-desc">Что рассказывают наши постояльцы о работе с нами</p>
+    </div>
+    <div class="reviews-slider reveal">
+      <article class="review">
+        <div class="review-head"><div class="review-avatar">ИП</div><div><div class="review-name">Иван Петров</div><div class="review-role">Постоялец</div></div></div>
+        <p class="review-text">Потерял работу и жильё после тяжёлой болезни. В Рабочем Доме восстановили документы, нашли работу. Сейчас снимаю собственную квартиру — жизнь наладилась.</p>
+        <div class="review-stars" aria-label="Оценка 5 из 5">★★★★★</div>
+      </article>
+      <article class="review">
+        <div class="review-head"><div class="review-avatar">МС</div><div><div class="review-name">Мария Сидорова</div><div class="review-role">Постоялец</div></div></div>
+        <p class="review-text">После освобождения мне предоставили жильё, работу и психолога. Сегодня работаю штукатуром и строю новую жизнь. Огромное спасибо Рабочему Дому!</p>
+        <div class="review-stars" aria-label="Оценка 5 из 5">★★★★★</div>
+      </article>
+      <article class="review">
+        <div class="review-head"><div class="review-avatar">АС</div><div><div class="review-name">Алексей Смирнов</div><div class="review-role">Постоялец</div></div></div>
+        <p class="review-text">Прошёл курс реабилитации, нашёл работу в мастерской и восстановил отношения с близкими. Веду трезвый образ жизни — Рабочий Дом дал мне этот шанс.</p>
+        <div class="review-stars" aria-label="Оценка 5 из 5">★★★★★</div>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- STATS -->
+<section aria-label="Статистика Рабочего Дома в цифрах">
+  <div class="container">
+    <div class="section-head reveal">
+      <span class="section-label">В цифрах</span>
+      <h2 class="section-title">Мы <span>в цифрах</span></h2>
+    </div>
+    <div class="stats-grid reveal">
+      <div class="stat"><div class="stat-num" data-count="1200">0</div><div class="stat-lbl">Спасённых жизней</div></div>
+      <div class="stat"><div class="stat-num" data-count="380">0</div><div class="stat-lbl">Филиалов по России</div></div>
+      <div class="stat"><div class="stat-num" data-count="20">0</div><div class="stat-lbl">Лет заботимся о людях</div></div>
+      <div class="stat"><div class="stat-num" data-count="4300">0</div><div class="stat-lbl">Благодарственных писем</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- PARTNERS -->
+<section class="partners" aria-label="Наши партнёры">
+  <div class="container">
+    <div class="section-head reveal">
+      <span class="section-label">Партнёры</span>
+      <h2 class="section-title">Наши <span>партнёры</span></h2>
+    </div>
+    <div class="partners-grid reveal">
+      <div class="partner"><img src="https://fondpravmir.ru/wp-content/uploads/2017/04/partners-logo__vse-vmeste__1-300x245.png" alt="Логотип партнёра — фонд Все вместе" loading="lazy" width="300" height="245"></div>
+      <div class="partner"><img src="https://fondpravmir.ru/wp-content/uploads/2023/03/blagopoluchie-logo-300x100.jpg" alt="Логотип партнёра — фонд Благополучие" loading="lazy" width="300" height="100"></div>
+      <div class="partner"><img src="https://fondpravmir.ru/wp-content/uploads/2021/09/absolut-pomosh-300x42.png" alt="Логотип партнёра — фонд Абсолют помощь" loading="lazy" width="300" height="42"></div>
+      <div class="partner"><img src="https://fondpravmir.ru/wp-content/uploads/2021/09/logo_new-300x121.jpeg" alt="Логотип партнёра — благотворительный фонд" loading="lazy" width="300" height="121"></div>
+    </div>
+  </div>
+</section>
+
+<!-- FAQ -->
+<section class="faq" id="faq" aria-label="Часто задаваемые вопросы">
+  <div class="container">
+    <div class="section-head reveal">
+      <span class="section-label">FAQ</span>
+      <h2 class="section-title">Часто задаваемые <span>вопросы</span></h2>
+      <p class="section-desc">Ответы на самые популярные вопросы о Рабочем Доме в Москве</p>
+    </div>
+    <div class="faq-list reveal">
+      <div class="faq-item">
+        <button class="faq-q" aria-expanded="false">Что такое Рабочий Дом?<span class="faq-q-icon">+</span></button>
+        <div class="faq-a"><div class="faq-a-inner">Рабочий Дом — это организация в Москве, предоставляющая бесплатное проживание, трёхразовое питание и трудоустройство людям в сложной жизненной ситуации. Мы помогаем с восстановлением документов и ресоциализацией.</div></div>
+      </div>
+      <div class="faq-item">
+        <button class="faq-q" aria-expanded="false">Сколько стоит проживание?<span class="faq-q-icon">+</span></button>
+        <div class="faq-a"><div class="faq-a-inner">Проживание полностью бесплатное. Также бесплатно трёхразовое питание. Вы получаете зарплату от 2 000 ₽ в день — деньги на руки ежедневно.</div></div>
+      </div>
+      <div class="faq-item">
+        <button class="faq-q" aria-expanded="false">Как быстро можно заселиться?<span class="faq-q-icon">+</span></button>
+        <div class="faq-a"><div class="faq-a-inner">Заселение происходит в день обращения. Не нужно ждать, проходить долгие проверки или вносить залог. Выплаты и проживание предоставляются сразу.</div></div>
+      </div>
+      <div class="faq-item">
+        <button class="faq-q" aria-expanded="false">Можно ли заселиться без паспорта и документов?<span class="faq-q-icon">+</span></button>
+        <div class="faq-a"><div class="faq-a-inner">Да, мы принимаем людей даже при полном отсутствии документов. Сначала заселяем, обеспечиваем работой и питанием, а параллельно помогаем восстановить паспорт, СНИЛС, ИНН и другие документы.</div></div>
+      </div>
+      <div class="faq-item">
+        <button class="faq-q" aria-expanded="false">Какие вакансии доступны?<span class="faq-q-icon">+</span></button>
+        <div class="faq-a"><div class="faq-a-inner">Доступны вакансии: демонтажник, дворник, землекоп, подсобный рабочий, разнорабочий, специалист. Зарплата от 2 000 до 3 500 ₽ в день с ежедневными выплатами. Специалисты могут зарабатывать до 5 000 ₽ в день.</div></div>
+      </div>
+      <div class="faq-item">
+        <button class="faq-q" aria-expanded="false">Как выплачивается зарплата?<span class="faq-q-icon">+</span></button>
+        <div class="faq-a"><div class="faq-a-inner">Зарплата выплачивается ежедневно — от 2 000 до 5 000 ₽ в зависимости от специальности. Деньги на руки в конце каждой смены. Никаких задержек и скрытых удержаний.</div></div>
+      </div>
+      <div class="faq-item">
+        <button class="faq-q" aria-expanded="false">Принимаете ли женщин, семейные пары, людей после освобождения?<span class="faq-q-icon">+</span></button>
+        <div class="faq-a"><div class="faq-a-inner">Да. Мы помогаем всем, кто оказался в трудной ситуации: мужчинам и женщинам, семейным парам, людям после освобождения, беженцам. Единственное условие — готовность работать и соблюдать правила проживания.</div></div>
+      </div>
+      <div class="faq-item">
+        <button class="faq-q" aria-expanded="false">Сколько можно жить в Рабочем Доме?<span class="faq-q-icon">+</span></button>
+        <div class="faq-a"><div class="faq-a-inner">Срок проживания не ограничен — вы можете оставаться у нас столько, сколько нужно для восстановления документов, накопления средств и поиска постоянной работы. Многие живут от пары недель до нескольких месяцев.</div></div>
+      </div>
+      <div class="faq-item">
+        <button class="faq-q" aria-expanded="false">Помогаете ли вы с восстановлением документов?<span class="faq-q-icon">+</span></button>
+        <div class="faq-a"><div class="faq-a-inner">Да, мы помогаем восстановить паспорт, СНИЛС, ИНН и другие необходимые документы. У нас налажен процесс — вам не придётся бегать по инстанциям в одиночку.</div></div>
+      </div>
+      <div class="faq-item">
+        <button class="faq-q" aria-expanded="false">Где находится Рабочий Дом и как добраться?<span class="faq-q-icon">+</span></button>
+        <div class="faq-a"><div class="faq-a-inner">Мы находимся в Москве, рядом с метро Выхино. Точный адрес сообщаем при первом звонке — для безопасности наших постояльцев. Позвоните +7 (901) 078-76-03, и мы расскажем, как доехать.</div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- CTA -->
+<section class="cta" aria-label="Свяжитесь с нами — заказать звонок">
+  <div class="container">
+    <div class="cta-inner reveal">
+      <h2>Нужна помощь прямо сейчас?</h2>
+      <p>Позвоните нам или оставьте заявку — мы работаем круглосуточно и ответим в течение 5 минут</p>
+      <div class="cta-buttons">
+        <a href="tel:+79010787603" class="btn btn-white">📞 +7 (901) 078-76-03</a>
+        <button class="btn btn-outline-white" onclick="openModal()">Заказать звонок</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<!-- FOOTER -->
+<footer class="footer" id="contacts" role="contentinfo">
+  <div class="container">
+    <div class="footer-grid">
+      <div class="footer-brand">
+        <a href="https://дом-помощи.рф/" class="logo" aria-label="Рабочий Дом — главная">
+          <div class="logo-mark" aria-hidden="true">РД</div>
+          <div class="logo-text">
+            <span class="logo-title">Рабочий дом</span>
+            <span class="logo-sub">В Москве</span>
+          </div>
+        </a>
+        <p>Помощь в трудной жизненной ситуации — бесплатное проживание, питание и трудоустройство. Безопасность, надёжность и анонимность гарантированы.</p>
+      </div>
+      <nav aria-label="Навигация в подвале">
+        <h4>Меню</h4>
+        <ul class="footer-links">
+          <li><a href="https://дом-помощи.рф/">Главная</a></li>
+          <li><a href="#guarantees">Преимущества</a></li>
+          <li><a href="#about">О нас</a></li>
+          <li><a href="#jobs">Вакансии</a></li>
+          <li><a href="#faq">FAQ</a></li>
+          <li><a href="#reviews">Отзывы</a></li>
+        </ul>
+      </nav>
+      <div>
+        <h4>Помощь</h4>
+        <ul class="footer-links">
+          <li><a href="#faq">Правила проживания</a></li>
+          <li><a href="#about">Как к нам попасть</a></li>
+          <li><a href="#faq">Восстановление документов</a></li>
+          <li><a href="#faq">Политика конфиденциальности</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Контакты</h4>
+        <div class="footer-contact-item">
+          <div class="footer-contact-icon">📞</div>
+          <div class="footer-contact-text"><strong><a href="tel:+79010787603" style="color:#fff">+7 (901) 078-76-03</a></strong>Круглосуточно</div>
+        </div>
+        <div class="footer-contact-item">
+          <div class="footer-contact-icon">📍</div>
+          <div class="footer-contact-text"><strong>Москва, м. Выхино</strong>Адрес при обращении</div>
+        </div>
+        <div class="footer-contact-item">
+          <div class="footer-contact-icon">🕐</div>
+          <div class="footer-contact-text"><strong>24/7</strong>Без выходных</div>
+        </div>
+      </div>
+    </div>
+    <div class="footer-bottom">© 2026 Рабочий Дом в Москве. Все права защищены. ИНН: 7700000000 | ОГРН: 1027700000000</div>
+  </div>
+</footer>
+
+<!-- FLOATING BUTTONS -->
+<div class="float-btns">
+  <button class="float-btn top" id="scrollTop" onclick="window.scrollTo({top:0,behavior:'smooth'})" aria-label="Прокрутить страницу наверх">↑</button>
+  <a href="tel:+79010787603" class="float-btn phone" aria-label="Позвонить +7 901 078-76-03">📞</a>
+</div>
+
+<!-- MODAL -->
+<div class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+  <div class="modal-box">
+    <button class="modal-close" onclick="closeModal()" aria-label="Закрыть окно">×</button>
+    <h3 id="modal-title">Заказать звонок</h3>
+    <p>Оставьте номер — перезвоним в течение 5 минут. Работаем круглосуточно.</p>
+    <form id="callbackForm" onsubmit="submitForm(event)">
+      <div class="form-group"><input type="text" name="name" placeholder="Ваше имя" required aria-label="Ваше имя"></div>
+      <div class="form-group"><input type="tel" name="phone" placeholder="+7 (___) ___-__-__" required aria-label="Ваш номер телефона"></div>
+      <button type="submit" class="btn btn-primary" id="submitBtn">Жду звонка</button>
+    </form>
+  </div>
+</div>
+
+<script>
+// ── FormSubmit config ──
+var FORM_EMAIL = '4873798262194176@telegram-email.appspotmail.com';
+
+// Burger menu
+var burger = document.getElementById('burger');
+var nav    = document.getElementById('nav');
+burger.addEventListener('click', function(){
+  burger.classList.toggle('active');
+  nav.classList.toggle('open');
+  var isOpen = nav.classList.contains('open');
+  burger.setAttribute('aria-expanded', isOpen);
+  document.body.style.overflow = isOpen ? 'hidden' : '';
+});
+nav.querySelectorAll('a').forEach(function(a){
+  a.addEventListener('click', function(){
+    burger.classList.remove('active');
+    nav.classList.remove('open');
+    burger.setAttribute('aria-expanded', 'false');
+    document.body.style.overflow = '';
+  });
+});
+
+// Modal
+function openModal(){
+  document.getElementById('modal').classList.add('active');
+  document.body.style.overflow = 'hidden';
+}
+function closeModal(){
+  document.getElementById('modal').classList.remove('active');
+  document.body.style.overflow = '';
+  var form = document.getElementById('callbackForm');
+  if (form) form.reset();
+  var btn = document.getElementById('submitBtn');
+  if (btn) { btn.textContent = 'Жду звонка'; btn.disabled = false; }
+}
+document.getElementById('modal').addEventListener('click', function(e){
+  if (e.target.id === 'modal') closeModal();
+});
+document.addEventListener('keydown', function(e){
+  if (e.key === 'Escape') closeModal();
+});
+
+// ── SUBMIT FORM → EMAIL (FormSubmit) ──
+function submitForm(e){
+  e.preventDefault();
+
+  var form  = e.target;
+  var name  = form.querySelector('input[name="name"]').value.trim();
+  var phone = form.querySelector('input[name="phone"]').value.trim();
+  var btn   = document.getElementById('submitBtn');
+  var box   = form.closest('.modal-box');
+
+  btn.textContent = 'Отправляю...';
+  btn.disabled = true;
+
+  // Данные для FormSubmit
+  var body = new FormData();
+  body.append('name', name);
+  body.append('phone', phone);
+  body.append('_subject', 'Заявка с сайта дом-помощи.рф');
+  body.append('_captcha', 'false');
+
+  fetch('https://formsubmit.co/ajax/' + FORM_EMAIL, {
+    method: 'POST',
+    body: body
+  })
+  .then(function(res){ return res.json(); })
+  .then(function(data){
+    if (data.success) {
+      box.innerHTML =
+        '<div style="text-align:center;padding:20px">' +
+        '<div style="font-size:48px;margin-bottom:16px">✅</div>' +
+        '<h3 style="margin-bottom:12px;color:#fff">Заявка принята!</h3>' +
+        '<p style="color:var(--text-dim)">Мы перезвоним вам в течение 5 минут</p>' +
+        '</div>';
+      setTimeout(closeModal, 3000);
+    } else {
+      box.innerHTML =
+        '<div style="text-align:center;padding:20px">' +
+        '<div style="font-size:48px;margin-bottom:16px">⚠️</div>' +
+        '<h3 style="margin-bottom:12px;color:#fff">Ошибка отправки</h3>' +
+        '<p style="color:var(--text-dim)">Пожалуйста, позвоните нам напрямую:<br><a href="tel:+79010787603" style="color:var(--accent);font-weight:700">+7 (901) 078-76-03</a></p>' +
+        '</div>';
+    }
+  })
+  .catch(function(err){
+    box.innerHTML =
+      '<div style="text-align:center;padding:20px">' +
+      '<div style="font-size:48px;margin-bottom:16px">⚠️</div>' +
+      '<h3 style="margin-bottom:12px;color:#fff">Не удалось отправить</h3>' +
+      '<p style="color:var(--text-dim)">Пожалуйста, позвоните нам напрямую:<br><a href="tel:+79010787603" style="color:var(--accent);font-weight:700">+7 (901) 078-76-03</a></p>' +
+      '</div>';
+    console.error('FormSubmit error:', err);
+  });
+}
+
+// Scroll top button
+var scrollTopBtn = document.getElementById('scrollTop');
+window.addEventListener('scroll', function(){
+  scrollTopBtn.classList.toggle('visible', window.scrollY > 500);
+}, {passive: true});
+
+// Reveal on scroll
+var observer = new IntersectionObserver(function(entries){
+  entries.forEach(function(e){
+    if (e.isIntersecting) e.target.classList.add('visible');
+  });
+}, {threshold: 0.1});
+document.querySelectorAll('.reveal').forEach(function(el){ observer.observe(el); });
+
+// Counter animation
+var counterObs = new IntersectionObserver(function(entries){
+  entries.forEach(function(e){
+    if (e.isIntersecting){
+      var el     = e.target;
+      var target = +el.dataset.count;
+      var dur    = 1500;
+      var start  = performance.now();
+      function tick(now){
+        var p     = Math.min((now - start) / dur, 1);
+        var eased = 1 - Math.pow(1 - p, 3);
+        el.textContent = Math.floor(target * eased) + (target >= 100 ? '+' : '');
+        if (p < 1) requestAnimationFrame(tick);
+      }
+      requestAnimationFrame(tick);
+      counterObs.unobserve(el);
+    }
+  });
+}, {threshold: 0.5});
+document.querySelectorAll('[data-count]').forEach(function(el){ counterObs.observe(el); });
+
+// Phone mask
+document.querySelectorAll('input[type="tel"]').forEach(function(inp){
+  inp.addEventListener('input', function(e){
+    var v = e.target.value.replace(/\D/g, '');
+    if (v.startsWith('8')) v = '7' + v.slice(1);
+    if (!v.startsWith('7')) v = '7' + v;
+    v = v.slice(0, 11);
+    var f = '+7';
+    if (v.length > 1)  f += ' (' + v.slice(1, 4);
+    if (v.length >= 5) f += ') ' + v.slice(4, 7);
+    if (v.length >= 8) f += '-' + v.slice(7, 9);
+    if (v.length >= 10) f += '-' + v.slice(9, 11);
+    e.target.value = f;
+  });
+});
+
+// FAQ accordion
+document.querySelectorAll('.faq-q').forEach(function(btn){
+  btn.addEventListener('click', function(){
+    var item   = btn.parentElement;
+    var isOpen = item.classList.contains('open');
+    document.querySelectorAll('.faq-item.open').forEach(function(o){
+      o.classList.remove('open');
+      o.querySelector('.faq-q').setAttribute('aria-expanded', 'false');
+    });
+    if (!isOpen){
+      item.classList.add('open');
+      btn.setAttribute('aria-expanded', 'true');
+    }
+  });
+});
+</script>
+</body>
+</html>

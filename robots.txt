@@ -1,0 +1,3 @@
+User-agent: *
+Disallow:
+Sitemap: https://дом-помощи.рф/sitemap.xml
