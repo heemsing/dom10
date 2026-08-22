@@ -1,37 +1,3 @@
-```
-# Logs and temp files
-*.log
-*.tmp
-*.swp
+(seo-audit-report.md is a markdown file, which is a source/config file, so it should not be added to .gitignore)
 
-# Environment
-.env
-.env.local
-*.env.*
-
-# Coverage reports
-.coverage
-coverage/
-htmlcov/
-
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.Python
-*.so
-.Python
-env/
-venv/
-.venv/
-.ENV
-.python-version
-.pytest_cache/
-.mypy_cache/
-
-# Build artifacts
-dist/
-build/
-*.egg-info/
-```
+(empty)
