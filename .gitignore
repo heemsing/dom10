@@ -1,3 +1,35 @@
-(seo-audit-report.md is a markdown file, which is a source/config file, so it should not be added to .gitignore)
+```
+# Compiled Python files
+*.pyc
+__pycache__/
 
-(empty)
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.swp
+
+# Environment files
+.env
+.env.local
+*.env.*
+
+# Coverage reports
+coverage/
+htmlcov/
+.coverage
+
+# Python cache
+.mypy_cache/
+.pytest_cache/
+
+# Distribution artifacts
+dist/
+build/
+*.egg-info/
+
+# System files
+.DS_Store
+Thumbs.db
+```
